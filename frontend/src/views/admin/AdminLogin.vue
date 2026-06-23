@@ -1,15 +1,25 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import api, { ApiResponse } from '@/api';
 import { showSuccessToast } from 'vant';
+
+const ADMIN_LOGIN_USERNAME_KEY = 'adminLoginUsername';
+const ADMIN_LOGIN_PASSWORD_KEY = 'adminLoginPassword';
 
 const router = useRouter();
 const auth = useAuthStore();
 const username = ref('admin');
 const password = ref('');
 const loading = ref(false);
+
+onMounted(() => {
+  const savedUsername = localStorage.getItem(ADMIN_LOGIN_USERNAME_KEY);
+  const savedPassword = localStorage.getItem(ADMIN_LOGIN_PASSWORD_KEY);
+  if (savedUsername) username.value = savedUsername;
+  if (savedPassword) password.value = savedPassword;
+});
 
 async function login() {
   loading.value = true;
@@ -19,6 +29,8 @@ async function login() {
       password: password.value,
     });
     auth.setAdminToken(res.data.accessToken);
+    localStorage.setItem(ADMIN_LOGIN_USERNAME_KEY, username.value);
+    localStorage.setItem(ADMIN_LOGIN_PASSWORD_KEY, password.value);
     showSuccessToast('登录成功');
     router.push('/admin/dashboard');
   } finally {

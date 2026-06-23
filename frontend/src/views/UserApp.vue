@@ -6,6 +6,7 @@ import { showLoadingToast, closeToast, showDialog, showSuccessToast, showConfirm
 import SeatBooking from '@/components/SeatBooking.vue';
 
 const session = useSessionStore();
+const LAST_REDEEM_CODE_KEY = 'lastRedeemCode';
 const codeInput = ref('');
 const loading = ref(false);
 const activeTab = ref(0);
@@ -77,6 +78,15 @@ interface CodePreview {
   membershipEndAt?: string;
 }
 
+function loadLastRedeemCode() {
+  const saved = localStorage.getItem(LAST_REDEEM_CODE_KEY);
+  if (saved) codeInput.value = saved;
+}
+
+function saveLastRedeemCode(code: string) {
+  localStorage.setItem(LAST_REDEEM_CODE_KEY, code);
+}
+
 function buildActivationConfirmMessage(preview: CodePreview) {
   const lines = [
     `卡类型：${preview.productName}`,
@@ -121,8 +131,8 @@ async function submitCode() {
     }
 
     await session.accessByCode(digits);
+    saveLastRedeemCode(digits);
     showSuccessToast(preview.isFirstActivation ? '激活成功' : '验证成功');
-    codeInput.value = '';
     await refreshStatus();
   } finally {
     loading.value = false;
@@ -212,6 +222,7 @@ function showPasscode() {
 function exitSession() {
   session.clear();
   activeTab.value = 0;
+  loadLastRedeemCode();
 }
 
 async function copyText(text: string, emptyMessage: string) {
@@ -258,7 +269,11 @@ function openMeituan() {
 onMounted(() => {
   document.title = '朴素自习室';
   loadSettings();
-  if (session.isActive) refreshStatus();
+  if (session.isActive) {
+    refreshStatus();
+  } else {
+    loadLastRedeemCode();
+  }
 });
 </script>
 
@@ -294,7 +309,7 @@ onMounted(() => {
             进入自习室
           </van-button>
         </van-form>
-        <p class="redeem-tip">激活后预约座位，营业时间内开门</p>
+        <p class="redeem-tip">收到兑换码后请尽快激活（7天内有效，注意保密）；激活后预约座位，营业时间内开门</p>
       </section>
 
       <section class="home-section contact-section">
