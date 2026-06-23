@@ -1,0 +1,33 @@
+/* 必须在 vant.css 之后加载，否则会被 Vant 默认蓝色覆盖 */
+:root {
+  --tt-red: #f85959;
+  --tt-bg: #f4f5f6;
+  --tt-text: #222222;
+  --tt-text-secondary: #999999;
+  --tt-border: #eeeeee;
+  --tt-card: #ffffff;
+
+  --van-blue: #f85959;
+  --van-primary-color: #f85959;
+  --van-button-primary-background: #f85959;
+  --van-button-primary-border-color: #f85959;
+  --van-grid-item-icon-color: #f85959;
+  --van-nav-bar-background: #ffffff;
+  --van-nav-bar-title-text-color: #222222;
+  --van-nav-bar-icon-color: #222222;
+  --van-tab-active-text-color: #222222;
+  --van-tabs-bottom-bar-color: #f85959;
+  --van-background: #f4f5f6;
+  --van-background-2: #f4f5f6;
+  --van-cell-background: #ffffff;
+  --van-cell-active-color: #f7f7f7;
+  --van-notice-bar-background: #fff7f7;
+  --van-notice-bar-text-color: #f85959;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  background: var(--tt-bg);
+  color: var(--tt-text);
+  -webkit-font-smoothing: antialiased;
+}

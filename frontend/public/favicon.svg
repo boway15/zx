@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="朴素">
+  <rect width="512" height="512" rx="108" fill="#f85959"/>
+  <text
+    x="256"
+    y="288"
+    text-anchor="middle"
+    fill="#ffffff"
+    font-family="PingFang SC, Microsoft YaHei, SimHei, sans-serif"
+    font-size="148"
+    font-weight="500"
+  >朴素</text>
+</svg>
