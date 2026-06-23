@@ -942,4 +942,47 @@ onMounted(() => {
 .user-app :deep(.van-cell-group--inset) {
   margin: 0 12px;
 }
+
+@media screen and (max-width: 768px) {
+  .brand-title {
+    font-size: 17px;
+  }
+
+  .brand-desc {
+    font-size: 15px;
+  }
+
+  .section-title {
+    font-size: 17px;
+  }
+
+  .section-lead,
+  .letter-body,
+  .help-steps li,
+  .help-tab,
+  .help-hours,
+  .wechat-row-value,
+  .reservation-label {
+    font-size: 14px;
+  }
+
+  .redeem-tip,
+  .hint,
+  .qrcode-tip,
+  .wechat-row-label,
+  .letter-sign {
+    font-size: 13px;
+  }
+
+  .qrcode-placeholder,
+  .wechat-copy-btn,
+  .help-steps li::before,
+  .postmark {
+    font-size: 12px;
+  }
+
+  .user-app :deep(.main-tabs .van-tab) {
+    font-size: 16px;
+  }
+}
 </style>

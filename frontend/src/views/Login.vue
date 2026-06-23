@@ -46,13 +46,14 @@ async function login() {
       <van-cell-group inset>
         <van-field
           v-model="phone"
+          size="large"
           type="tel"
           label="手机号"
           placeholder="请输入手机号"
           maxlength="11"
           :rules="[{ required: true, message: '请输入手机号' }]"
         />
-        <van-field v-model="nickname" label="昵称" placeholder="选填" />
+        <van-field v-model="nickname" size="large" label="昵称" placeholder="选填" />
       </van-cell-group>
       <div class="btn-wrap">
         <van-button round block type="primary" native-type="submit" :loading="loading">

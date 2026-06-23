@@ -1,6 +1,6 @@
 {
   "name": "zxs-backend",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "自助自习室系统后端",
   "scripts": {
     "build": "nest build",

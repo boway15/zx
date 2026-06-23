@@ -31,3 +31,25 @@ body {
   color: var(--tt-text);
   -webkit-font-smoothing: antialiased;
 }
+
+/* 移动端：整体字号与表单触控区域适当放大 */
+@media screen and (max-width: 768px) {
+  :root {
+    --van-font-size-xs: 11px;
+    --van-font-size-sm: 13px;
+    --van-font-size-md: 16px;
+    --van-font-size-lg: 18px;
+    --van-cell-line-height: 28px;
+    --van-cell-vertical-padding: 14px;
+    --van-cell-large-vertical-padding: 18px;
+    --van-button-default-height: 48px;
+    --van-button-large-height: 52px;
+    --van-nav-bar-title-font-size: 17px;
+    --van-tabbar-item-font-size: 13px;
+    --van-tab-font-size: 16px;
+  }
+
+  body {
+    font-size: 16px;
+  }
+}

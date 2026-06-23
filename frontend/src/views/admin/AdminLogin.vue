@@ -44,8 +44,8 @@ async function login() {
     <h2>管理后台</h2>
     <van-form @submit="login">
       <van-cell-group inset>
-        <van-field v-model="username" label="用户名" placeholder="admin" />
-        <van-field v-model="password" type="password" label="密码" placeholder="请输入密码" />
+        <van-field v-model="username" size="large" label="用户名" placeholder="admin" />
+        <van-field v-model="password" size="large" type="password" label="密码" placeholder="请输入密码" />
       </van-cell-group>
       <div style="padding: 24px 16px">
         <van-button round block type="primary" native-type="submit" :loading="loading">
@@ -64,6 +64,23 @@ async function login() {
 .admin-login h2 {
   text-align: center;
   margin-bottom: 32px;
+  font-size: 22px;
   color: var(--tt-text);
+}
+
+.admin-login :deep(.van-button) {
+  height: 48px;
+  font-size: 16px;
+}
+
+@media screen and (max-width: 768px) {
+  .admin-login h2 {
+    font-size: 24px;
+  }
+
+  .admin-login :deep(.van-field__control) {
+    font-size: 16px;
+    min-height: 28px;
+  }
 }
 </style>
