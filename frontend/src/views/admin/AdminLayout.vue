@@ -19,13 +19,14 @@ function logout() {
       </template>
     </van-nav-bar>
 
-    <van-grid :column-num="4" :border="false" class="nav-grid">
+    <van-grid :column-num="4" :border="false" clickable class="nav-grid">
       <van-grid-item icon="chart-trending-o" text="仪表盘" to="/admin/dashboard" />
       <van-grid-item icon="coupon-o" text="卡价管理" to="/admin/products" />
       <van-grid-item icon="gift-o" text="核销兑换" to="/admin/redemption" />
       <van-grid-item icon="cluster-o" text="座位管理" to="/admin/seats" />
       <van-grid-item icon="todo-list-o" text="预约查看" to="/admin/reservations" />
-      <van-grid-item icon="records" text="开门记录" to="/admin/logs" />
+      <van-grid-item icon="records-o" text="开门记录" to="/admin/logs" />
+      <van-grid-item icon="shield-o" text="通通锁" to="/admin/ttlock" />
       <van-grid-item icon="setting-o" text="设置" to="/admin/settings" />
     </van-grid>
 

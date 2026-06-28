@@ -20,10 +20,11 @@ export class CreateRedemptionCodeDto {
   @Matches(/^\d{11}$/, { message: '兑换码必须为11位纯数字' })
   code?: string;
 
+  /** 兑换码激活期限（自然日，默认 7 天，截止最后一天 23:59） */
   @IsOptional()
   @IsInt()
   @Min(1)
-  redeemValidHours?: number;
+  redeemValidDays?: number;
 
   @IsOptional()
   @IsString()
@@ -43,4 +44,10 @@ export class RedeemCodeDto {
   @IsNotEmpty()
   @Matches(/^\d{11}$/, { message: '兑换码必须为11位纯数字' })
   code!: string;
+}
+
+export class ExtendRedemptionDto {
+  @IsInt()
+  @Min(1)
+  days!: number;
 }

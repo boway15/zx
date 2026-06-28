@@ -120,7 +120,7 @@ async function cancelReservation(
   try {
     await showConfirmDialog({
       title: '取消预约',
-      message: `确定取消 ${cancelLabel(item)} 的预约吗？`,
+      message: `确定取消 ${cancelLabel(item)} 的预约吗？\n\n说明：仅取消该日预约；周卡/月卡其余日期不受影响。`,
     });
   } catch {
     return;

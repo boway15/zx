@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue';
 import api, { ApiResponse } from '@/api';
 import { showLoadingToast, closeToast, showSuccessToast } from 'vant';
+import type { UploaderFileListItem } from 'vant';
 
 const storeName = ref('');
 const start = ref('');
@@ -35,13 +36,14 @@ async function save() {
   showSuccessToast('保存成功');
 }
 
-async function uploadQrcode(file: { file: File | undefined }) {
-  if (!file.file) return;
+async function uploadQrcode(file: UploaderFileListItem | UploaderFileListItem[]) {
+  const item = Array.isArray(file) ? file[0] : file;
+  if (!item?.file) return;
   qrcodeUploading.value = true;
   showLoadingToast({ message: '上传中...', forbidClick: true });
   try {
     const formData = new FormData();
-    formData.append('file', file.file);
+    formData.append('file', item.file);
     const res = await api.post<ApiResponse<{ url: string }>>('/settings/admin/wechat-qrcode', formData);
     wechatQrcodeUrl.value = res.data.url;
     showSuccessToast('二维码已更新');
@@ -89,15 +91,13 @@ async function uploadQrcode(file: { file: File | undefined }) {
         <van-button round block type="primary" native-type="submit">保存</van-button>
       </div>
     </van-form>
-    <van-divider>通通锁配置</van-divider>
-    <p class="hint">锁ID、网关ID、通通锁凭证请在服务器 .env 文件中配置</p>
     <p class="hint">用户端首页会展示管理员微信二维码、微信号与美团购买入口</p>
   </div>
 </template>
 
 <style scoped>
 h3 { margin-bottom: 16px; }
-.hint { font-size: 12px; color: #969799; padding: 0 16px; }
+.hint { font-size: 12px; color: #969799; padding: 0 16px; margin-top: 8px; }
 .qrcode-upload {
   display: flex;
   flex-direction: column;

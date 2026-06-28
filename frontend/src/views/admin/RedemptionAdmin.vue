@@ -25,7 +25,7 @@ const codes = ref<RedemptionCode[]>([]);
 const showCreate = ref(false);
 const form = ref({
   productId: '',
-  redeemValidHours: 168,
+  redeemValidDays: 7,
   note: '',
   externalPlatform: 'meituan',
   externalVoucher: '',
@@ -58,7 +58,7 @@ async function create() {
   try {
     const payload: Record<string, unknown> = {
       productId: form.value.productId,
-      redeemValidHours: form.value.redeemValidHours,
+      redeemValidDays: form.value.redeemValidDays,
       note: form.value.note || undefined,
       externalPlatform: form.value.externalPlatform || undefined,
       externalVoucher: form.value.externalVoucher || undefined,
@@ -89,6 +89,21 @@ async function create() {
 async function revoke(id: string) {
   await api.post(`/redemption/admin/${id}/revoke`);
   showSuccessToast('已作废');
+  load();
+}
+
+async function extendCode(id: string) {
+  try {
+    await showConfirmDialog({
+      title: '延长兑换期限',
+      message: '将把该兑换码的兑换期限从今天起重新计算 7 天。适用于用户已兑换但未及时预约的情况。',
+      confirmButtonText: '确认延长',
+    });
+  } catch {
+    return;
+  }
+  await api.post(`/redemption/admin/${id}/extend`, { days: 7 });
+  showSuccessToast('兑换期限已延长');
   load();
 }
 
@@ -161,6 +176,9 @@ onMounted(load);
         <template v-if="c.status === 'unused'" #right-icon>
           <van-button size="mini" type="danger" plain @click="revoke(c.id)">作废</van-button>
         </template>
+        <template v-else-if="c.status === 'used' || c.status === 'expired'" #right-icon>
+          <van-button size="mini" type="primary" plain @click="extendCode(c.id)">延长</van-button>
+        </template>
       </van-cell>
       <van-empty v-if="codes.length === 0" description="暂无兑换码" />
     </van-cell-group>
@@ -206,10 +224,10 @@ onMounted(load);
           <van-field v-model="form.externalVoucher" label="平台券码" placeholder="用户发来的券码" />
           <van-field v-model="form.note" label="备注" placeholder="用户微信昵称等" />
           <van-field
-            v-model.number="form.redeemValidHours"
+            v-model.number="form.redeemValidDays"
             type="digit"
-            label="兑换期限(小时)"
-            placeholder="168=7天"
+            label="兑换期限(自然日)"
+            placeholder="默认7天，截止最后一天23:59"
           />
           <div class="btn-wrap">
             <van-button round block type="primary" native-type="submit" :loading="creating">

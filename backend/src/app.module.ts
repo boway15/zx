@@ -1,8 +1,9 @@
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 import configuration from './config/configuration';
+import { validateProductionConfig } from './config/production-validation';
 import { User } from './entities/user.entity';
 import { Product } from './entities/product.entity';
 import { Order } from './entities/order.entity';
@@ -28,6 +29,7 @@ import { Room } from './entities/room.entity';
 import { Seat } from './entities/seat.entity';
 import { Reservation } from './entities/reservation.entity';
 import { HealthController } from './health.controller';
+import { GuardsModule } from './common/guards/guards.module';
 
 @Module({
   imports: [
@@ -35,6 +37,7 @@ import { HealthController } from './health.controller';
       isGlobal: true,
       load: [configuration],
     }),
+    GuardsModule,
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -78,4 +81,10 @@ import { HealthController } from './health.controller';
   ],
   controllers: [HealthController],
 })
-export class AppModule {}
+export class AppModule implements OnModuleInit {
+  constructor(private readonly configService: ConfigService) {}
+
+  onModuleInit() {
+    validateProductionConfig(this.configService);
+  }
+}

@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -10,6 +10,7 @@ import { ProductService } from '../product/product.service';
 import { MembershipService } from '../membership/membership.service';
 import { UserService } from '../user/user.service';
 import { CreateOrderDto } from './order.dto';
+import { parseWechatNotify } from '../../common/wechat-pay.util';
 
 @Injectable()
 export class OrderService {
@@ -148,6 +149,10 @@ export class OrderService {
   }
 
   async mockPay(orderId: string, userId: string) {
+    if (!this.configService.get<boolean>('wechat.mockPay')) {
+      throw new ForbiddenException('模拟支付未启用');
+    }
+
     const order = await this.orderRepo.findOne({
       where: { id: orderId, userId },
       relations: ['product'],
@@ -157,6 +162,30 @@ export class OrderService {
       throw new BadRequestException('订单状态不正确');
     }
     return this.handlePaymentSuccess(order.outTradeNo, `mock_${uuidv4()}`);
+  }
+
+  async handleWechatNotify(
+    body: Record<string, unknown>,
+    headers: Record<string, string | string[] | undefined>,
+  ) {
+    const mockPay = this.configService.get<boolean>('wechat.mockPay');
+    if (mockPay) {
+      const outTradeNo = String(body.out_trade_no || '');
+      const transactionId = String(body.transaction_id || '');
+      if (!outTradeNo || !transactionId) {
+        throw new BadRequestException('Invalid mock notify payload');
+      }
+      await this.handlePaymentSuccess(outTradeNo, transactionId);
+      return;
+    }
+
+    const apiV3Key = this.configService.get<string>('wechat.apiV3Key') || '';
+    const verified = parseWechatNotify(
+      body as Parameters<typeof parseWechatNotify>[0],
+      headers,
+      apiV3Key,
+    );
+    await this.handlePaymentSuccess(verified.outTradeNo, verified.transactionId);
   }
 
   async listByUser(userId: string) {

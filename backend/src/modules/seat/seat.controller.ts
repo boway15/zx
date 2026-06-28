@@ -11,7 +11,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { SeatService } from './seat.service';
-import { CreateReservationDto, UpdateSeatBookableDto } from './seat.dto';
+import { CreateReservationDto, PreviewSeatPlanDto, UpdateSeatBookableDto } from './seat.dto';
 import { MembershipAuthGuard, AdminAuthGuard } from '../../common/guards/auth.guards';
 import { CurrentMembership } from '../../common/decorators/current-user.decorator';
 
@@ -23,9 +23,9 @@ export class SeatController {
   @UseGuards(MembershipAuthGuard)
   async availability(
     @CurrentMembership() ctx: { membershipId: string },
-    @Query('date') date?: string,
+    @Query('startDate') startDate?: string,
   ) {
-    const data = await this.seatService.getAvailability(date, ctx.membershipId);
+    const data = await this.seatService.getAvailability(startDate, ctx.membershipId);
     return { success: true, data };
   }
 
@@ -36,6 +36,16 @@ export class SeatController {
     @Query('date') date?: string,
   ) {
     const data = await this.seatService.getMyReservation(ctx.membershipId, date);
+    return { success: true, data };
+  }
+
+  @Post('preview-plan')
+  @UseGuards(MembershipAuthGuard)
+  async previewPlan(
+    @CurrentMembership() ctx: { membershipId: string },
+    @Body() dto: PreviewSeatPlanDto,
+  ) {
+    const data = await this.seatService.previewSeatPlan(ctx.membershipId, dto);
     return { success: true, data };
   }
 

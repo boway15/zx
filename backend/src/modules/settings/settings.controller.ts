@@ -15,6 +15,7 @@ import { extname } from 'path';
 import { SettingsService } from './settings.service';
 import { AdminAuthGuard } from '../../common/guards/auth.guards';
 import { UpdateSettingsDto } from './settings.dto';
+import { validateSettingsPayload } from './settings-validation.util';
 import {
   clearWechatQrcodeFiles,
   ensureUploadDir,
@@ -53,6 +54,7 @@ export class SettingsController {
   @Put('admin')
   @UseGuards(AdminAuthGuard)
   async update(@Body() dto: UpdateSettingsDto) {
+    validateSettingsPayload(dto.settings);
     await this.settingsService.setMany(dto.settings);
     const data = await this.settingsService.getAll();
     return { success: true, data };

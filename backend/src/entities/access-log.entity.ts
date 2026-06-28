@@ -26,6 +26,10 @@ export class AccessLog {
   @Column({ name: 'user_id' })
   userId!: string;
 
+  /** 访客开门时关联的兑换码 */
+  @Column({ name: 'redemption_code', length: 11, nullable: true })
+  redemptionCode?: string;
+
   @Column({ type: 'enum', enum: AccessMethod })
   method!: AccessMethod;
 

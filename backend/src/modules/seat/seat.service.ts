@@ -5,15 +5,33 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, QueryFailedError, Repository } from 'typeorm';
 import { Seat } from '../../entities/seat.entity';
 import { Reservation } from '../../entities/reservation.entity';
 import { RedemptionCode } from '../../entities/redemption-code.entity';
-import { Membership } from '../../entities/membership.entity';
+import { Membership, MembershipStatus } from '../../entities/membership.entity';
 import { Product, ProductType } from '../../entities/product.entity';
 import { MembershipService } from '../membership/membership.service';
 import { RoomService } from './room.service';
-import { CreateReservationDto } from './seat.dto';
+import { CreateReservationDto, PreviewSeatPlanDto } from './seat.dto';
+import { getNaturalDays } from '../../common/membership-duration';
+import {
+  enumerateDatesFromStart,
+  getBookingHorizonDays,
+  getMembershipDateRange,
+  getSelectableStartDates,
+} from '../../common/booking-schedule';
+
+interface SeatAssignment {
+  date: string;
+  seatId: string;
+  seatLabel: string;
+  roomCode: string;
+  seatNo: number;
+  isPreferred: boolean;
+}
+
+type SeatWithMeta = Seat & { roomCode: string; label: string };
 
 @Injectable()
 export class SeatService {
@@ -43,59 +61,60 @@ export class SeatService {
     return product.type === ProductType.WEEK || product.type === ProductType.MONTH;
   }
 
-  private enumerateDateStrings(startAt: Date, endAt: Date): string[] {
-    const dates: string[] = [];
-    const cur = new Date(startAt);
-    cur.setHours(12, 0, 0, 0);
-    const end = new Date(endAt);
-    end.setHours(12, 0, 0, 0);
-    while (cur <= end) {
-      dates.push(this.localDateStr(cur));
-      cur.setDate(cur.getDate() + 1);
-    }
-    return dates;
+  private async getRedemptionForMembership(membershipId: string) {
+    return this.codeRepo.findOne({ where: { membershipId } });
   }
 
-  /** 周卡/月卡：从今日（或生效日）至会员卡到期日，需一次性预约的日期列表 */
-  private getMultiDayBookingDates(membership: Membership): string[] {
-    const startDay = this.localDateStr(membership.startAt);
-    const endDay = this.localDateStr(membership.endAt);
-    const today = this.todayDateStr();
-    const from = today > startDay ? today : startDay;
-    if (from > endDay) return [];
-    return this.enumerateDateStrings(
-      new Date(`${from}T12:00:00`),
-      membership.endAt,
-    ).filter((d) => d <= endDay);
+  private async resolvePlannedDates(
+    membership: Membership,
+    startDate?: string,
+  ): Promise<string[]> {
+    if (!membership.product) {
+      throw new BadRequestException('会员卡产品信息缺失');
+    }
+
+    if (membership.status === MembershipStatus.PENDING) {
+      const code = await this.getRedemptionForMembership(membership.id);
+      if (!code) throw new BadRequestException('兑换码信息缺失');
+
+      const selectable = getSelectableStartDates(
+        membership.product,
+        code.redeemValidUntil,
+      );
+      const chosen = startDate || selectable[0];
+      if (!chosen || !selectable.includes(chosen)) {
+        throw new BadRequestException('请选择有效的起始日期');
+      }
+      return enumerateDatesFromStart(chosen, getNaturalDays(membership.product));
+    }
+
+    if (!membership.startAt) {
+      throw new BadRequestException('会员卡尚未激活');
+    }
+    if (startDate) {
+      const lockedStart = this.localDateStr(membership.startAt);
+      if (startDate !== lockedStart) {
+        throw new BadRequestException('预约日期不可修改');
+      }
+    }
+    return getMembershipDateRange(membership.startAt, membership.product);
   }
 
-  private getBookingDates(membership: Membership, singleDate?: string): string[] {
-    if (membership.product && this.isMultiDayProduct(membership.product)) {
-      return this.getMultiDayBookingDates(membership);
-    }
-    return [singleDate || this.todayDateStr()];
-  }
-
-  private assertDateInMembership(dateStr: string, startAt: Date, endAt: Date) {
-    const day = new Date(`${dateStr}T12:00:00`);
-    if (day < new Date(startAt.toISOString().slice(0, 10) + 'T00:00:00')) {
-      throw new BadRequestException('预约日期早于会员卡生效日');
-    }
-    if (day > new Date(endAt.toISOString().slice(0, 10) + 'T23:59:59')) {
-      throw new BadRequestException('预约日期晚于会员卡有效期');
-    }
-  }
-
-  private buildBookingMeta(membership: Membership) {
+  private buildBookingMeta(
+    membership: Membership,
+    plannedDates: string[],
+    pending: boolean,
+  ) {
     const multiDay = !!(membership.product && this.isMultiDayProduct(membership.product));
-    const dates = multiDay ? this.getMultiDayBookingDates(membership) : [this.todayDateStr()];
     return {
+      pending,
       multiDay,
       productType: membership.product?.type || ProductType.DAY,
       productName: membership.product?.name || '',
-      dateFrom: dates[0] || null,
-      dateTo: dates[dates.length - 1] || null,
-      dayCount: dates.length,
+      dateFrom: plannedDates[0] || null,
+      dateTo: plannedDates[plannedDates.length - 1] || null,
+      dayCount: plannedDates.length,
+      canChangeDates: false,
     };
   }
 
@@ -106,6 +125,9 @@ export class SeatService {
     seatNo: number,
     reserveDate: string,
     booking: ReturnType<SeatService['buildBookingMeta']>,
+    assignments?: SeatAssignment[],
+    membership?: Membership,
+    hasTodayReservation = true,
   ) {
     return {
       id,
@@ -117,23 +139,147 @@ export class SeatService {
       dateFrom: booking.dateFrom,
       dateTo: booking.dateTo,
       dayCount: booking.dayCount,
+      hasTodayReservation,
+      assignments: assignments?.map((a) => ({
+        date: a.date,
+        seatLabel: a.seatLabel,
+        isPreferred: a.isPreferred,
+      })),
+      membership: membership
+        ? {
+            status: membership.status,
+            pending: membership.status === MembershipStatus.PENDING,
+            startAt: membership.startAt,
+            endAt: membership.endAt,
+          }
+        : undefined,
     };
   }
 
-  async getAvailability(dateStr?: string, membershipId?: string) {
-    const date = dateStr || this.todayDateStr();
+  private async loadAllSeatsWithMeta(): Promise<{
+    allSeats: SeatWithMeta[];
+    seatById: Map<string, SeatWithMeta>;
+  }> {
+    const rooms = await this.roomService.listRoomsWithSeats();
+    const allSeats: SeatWithMeta[] = rooms.flatMap((room) =>
+      room.seats.map((seat) =>
+        Object.assign(seat, {
+          roomCode: room.code,
+          label: `${room.code}-${seat.seatNo}`,
+        }),
+      ),
+    );
+    return { allSeats, seatById: new Map(allSeats.map((s) => [s.id, s])) };
+  }
+
+  async buildSeatPlan(
+    preferredSeatId: string,
+    dates: string[],
+    membershipId: string,
+  ): Promise<SeatAssignment[]> {
+    const { allSeats, seatById } = await this.loadAllSeatsWithMeta();
+    const preferred = seatById.get(preferredSeatId);
+    if (!preferred) throw new NotFoundException('座位不存在');
+    if (!preferred.bookable) throw new BadRequestException('该座位暂不可预约');
+
+    const existing = await this.reservationRepo.find({
+      where: { reserveDate: In(dates) },
+    });
+
+    const occupied = new Map<string, Set<string>>();
+    for (const r of existing) {
+      if (r.membershipId === membershipId) continue;
+      if (!occupied.has(r.reserveDate)) occupied.set(r.reserveDate, new Set());
+      occupied.get(r.reserveDate)!.add(r.seatId);
+    }
+
+    const assignments: SeatAssignment[] = [];
+
+    for (let i = 0; i < dates.length; i++) {
+      const date = dates[i];
+      const taken = occupied.get(date) || new Set<string>();
+      let chosen = preferred;
+
+      if (taken.has(preferredSeatId)) {
+        if (i === 0) {
+          throw new BadRequestException(
+            '预约首日该座位已被预约，请更换座位或起始日期',
+          );
+        }
+        const fallback = allSeats.find((s) => s.bookable && !taken.has(s.id));
+        if (!fallback) {
+          throw new BadRequestException(`${date} 已无可用座位，请更换起始日或首选座位`);
+        }
+        chosen = fallback;
+      }
+
+      assignments.push({
+        date,
+        seatId: chosen.id,
+        seatLabel: chosen.label,
+        roomCode: chosen.roomCode,
+        seatNo: chosen.seatNo,
+        isPreferred: chosen.id === preferredSeatId,
+      });
+    }
+
+    return assignments;
+  }
+
+  async previewSeatPlan(membershipId: string, dto: PreviewSeatPlanDto) {
+    const membership = await this.membershipService.findById(membershipId);
+    if (!membership) throw new NotFoundException('会员卡不存在');
+
+    const dates = await this.resolvePlannedDates(membership, dto.startDate);
+    const assignments = await this.buildSeatPlan(dto.seatId, dates, membershipId);
+    const pending = membership.status === MembershipStatus.PENDING;
+    const booking = this.buildBookingMeta(membership, dates, pending);
+
+    return {
+      booking,
+      assignments: assignments.map((a) => ({
+        date: a.date,
+        seatLabel: a.seatLabel,
+        isPreferred: a.isPreferred,
+      })),
+      allSameSeat: assignments.every((a) => a.isPreferred),
+    };
+  }
+
+  async getAvailability(startDate?: string, membershipId?: string) {
+    const date = startDate || this.todayDateStr();
     let membership: Membership | null = null;
     let rangeDates = [date];
+    let pending = false;
+    let selectableStartDates: string[] = [];
 
     if (membershipId) {
       membership = await this.membershipService.findById(membershipId);
-      if (membership?.product && this.isMultiDayProduct(membership.product)) {
-        rangeDates = this.getMultiDayBookingDates(membership);
-        if (!rangeDates.length) {
-          rangeDates = [date];
+      if (membership) {
+        pending = membership.status === MembershipStatus.PENDING;
+        if (pending) {
+          const code = await this.getRedemptionForMembership(membershipId);
+          if (code && membership.product) {
+            selectableStartDates = getSelectableStartDates(
+              membership.product,
+              code.redeemValidUntil,
+            );
+          }
+          rangeDates = await this.resolvePlannedDates(membership, startDate);
+        } else if (membership.startAt && membership.product) {
+          rangeDates = getMembershipDateRange(membership.startAt, membership.product);
+          selectableStartDates = rangeDates;
         }
       }
     }
+
+    const today = this.todayDateStr();
+    const viewDate =
+      startDate && rangeDates.includes(startDate)
+        ? startDate
+        : rangeDates.includes(today)
+          ? today
+          : rangeDates[0] || today;
 
     const rooms = await this.roomService.listRoomsWithSeats();
     const reservations = rangeDates.length
@@ -150,6 +296,14 @@ export class SeatService {
       seatDateOwner.get(r.seatId)!.set(r.reserveDate, r.membershipId);
     }
 
+    const myReservations =
+      membershipId && rangeDates.length
+        ? await this.reservationRepo.find({
+            where: { membershipId, reserveDate: In(rangeDates) },
+          })
+        : [];
+    const mySeatByDate = new Map(myReservations.map((r) => [r.reserveDate, r.seatId]));
+
     const roomList = rooms.map((room) => ({
       id: room.id,
       code: room.code,
@@ -158,15 +312,37 @@ export class SeatService {
         .sort((a, b) => a.seatNo - b.seatNo)
         .map((seat) => {
           const owners = seatDateOwner.get(seat.id);
-          const reservedByOther = rangeDates.some((d) => {
+          const checkDates = pending ? rangeDates : [viewDate];
+          const firstDay = rangeDates[0];
+          const firstDayOccupiedByOther =
+            !!owners?.get(firstDay) && owners.get(firstDay) !== membershipId;
+          const occupiedByOtherDates = checkDates.filter((d) => {
             const owner = owners?.get(d);
             return !!owner && owner !== membershipId;
           });
+          let reservedByOther: boolean;
+          let partiallyReservedByOther: boolean;
+          if (pending) {
+            const laterOccupiedByOther = rangeDates
+              .slice(1)
+              .some(
+                (d) =>
+                  !!owners?.get(d) && owners.get(d) !== membershipId,
+              );
+            reservedByOther = firstDayOccupiedByOther;
+            partiallyReservedByOther =
+              !firstDayOccupiedByOther && laterOccupiedByOther;
+          } else {
+            reservedByOther =
+              occupiedByOtherDates.length === checkDates.length;
+            partiallyReservedByOther =
+              occupiedByOtherDates.length > 0 &&
+              occupiedByOtherDates.length < checkDates.length;
+          }
           const isMine =
             !!membershipId &&
-            rangeDates.length > 0 &&
-            rangeDates.every((d) => owners?.get(d) === membershipId);
-          const reserved = rangeDates.some((d) => !!owners?.get(d));
+            mySeatByDate.get(viewDate) === seat.id;
+          const reserved = checkDates.some((d) => !!owners?.get(d));
           return {
             id: seat.id,
             seatNo: seat.seatNo,
@@ -175,6 +351,7 @@ export class SeatService {
             reserved,
             isMine,
             reservedByOther,
+            partiallyReservedByOther,
             available: seat.bookable && !reservedByOther,
           };
         }),
@@ -182,14 +359,26 @@ export class SeatService {
 
     return {
       booking: membership
-        ? this.buildBookingMeta(membership)
+        ? {
+            ...this.buildBookingMeta(membership, rangeDates, pending),
+            selectableStartDates,
+            selectedStartDate: viewDate,
+            bookingHorizonDays: membership.product
+              ? getBookingHorizonDays(membership.product)
+              : 7,
+          }
         : {
+            pending: false,
             multiDay: false,
             productType: ProductType.DAY,
             productName: '',
             dateFrom: date,
             dateTo: date,
             dayCount: 1,
+            canChangeDates: false,
+            selectableStartDates: [],
+            selectedStartDate: date,
+            bookingHorizonDays: 7,
           },
       rooms: roomList,
     };
@@ -200,44 +389,44 @@ export class SeatService {
     const membership = await this.membershipService.findById(membershipId);
     if (!membership) return null;
 
-    const booking = this.buildBookingMeta(membership);
+    if (membership.status === MembershipStatus.PENDING) return null;
 
-    if (booking.multiDay && booking.dayCount > 0) {
-      const rangeDates = this.getMultiDayBookingDates(membership);
-      if (!rangeDates.length) return null;
+    const plannedDates = await this.resolvePlannedDates(membership);
+    const booking = this.buildBookingMeta(membership, plannedDates, false);
 
-      const rangeReservations = await this.reservationRepo.find({
-        where: { membershipId, reserveDate: In(rangeDates) },
-        relations: ['seat', 'seat.room'],
-      });
-      if (!rangeReservations.length) return null;
-
-      const ref =
-        rangeReservations.find((r) => r.reserveDate === date) || rangeReservations[0];
-      const seat = ref.seat;
-      return this.formatReservationResult(
-        ref.id,
-        `${seat.room.code}-${seat.seatNo}`,
-        seat.room.code,
-        seat.seatNo,
-        ref.reserveDate,
-        booking,
-      );
-    }
-
-    const reservation = await this.reservationRepo.findOne({
-      where: { membershipId, reserveDate: date },
+    const rangeReservations = await this.reservationRepo.find({
+      where: { membershipId, reserveDate: In(plannedDates) },
       relations: ['seat', 'seat.room'],
+      order: { reserveDate: 'ASC' },
     });
-    if (!reservation) return null;
+    if (!rangeReservations.length) return null;
+
+    const todayReservation = rangeReservations.find((r) => r.reserveDate === date);
+    const ref = todayReservation || rangeReservations[0];
+    const seat = ref.seat;
+    const primarySeatId = rangeReservations[0].seatId;
+
+    const assignments: SeatAssignment[] = rangeReservations.map((r) => ({
+      date: r.reserveDate,
+      seatId: r.seatId,
+      seatLabel: `${r.seat.room.code}-${r.seat.seatNo}`,
+      roomCode: r.seat.room.code,
+      seatNo: r.seat.seatNo,
+      isPreferred: r.seatId === primarySeatId,
+    }));
+
+    const displaySeat = todayReservation?.seat ?? seat;
 
     return this.formatReservationResult(
-      reservation.id,
-      `${reservation.seat.room.code}-${reservation.seat.seatNo}`,
-      reservation.seat.room.code,
-      reservation.seat.seatNo,
-      reservation.reserveDate,
+      ref.id,
+      `${displaySeat.room.code}-${displaySeat.seatNo}`,
+      displaySeat.room.code,
+      displaySeat.seatNo,
+      todayReservation?.reserveDate ?? ref.reserveDate,
       booking,
+      assignments,
+      membership,
+      !!todayReservation,
     );
   }
 
@@ -245,72 +434,88 @@ export class SeatService {
     const membership = await this.membershipService.findById(membershipId);
     if (!membership) throw new NotFoundException('会员卡不存在');
 
-    const now = new Date();
-    if (membership.endAt <= now) {
+    if (
+      membership.status === MembershipStatus.ACTIVE &&
+      membership.endAt &&
+      membership.endAt <= new Date()
+    ) {
       throw new ForbiddenException('会员卡已过期');
     }
 
-    const booking = this.buildBookingMeta(membership);
-    const dates = this.getBookingDates(membership, dto.date);
-    if (!dates.length) {
-      throw new BadRequestException('会员卡已无可预约日期');
-    }
+    const dates = await this.resolvePlannedDates(membership, dto.startDate);
+    const assignments = await this.buildSeatPlan(dto.seatId, dates, membershipId);
+    const pending = membership.status === MembershipStatus.PENDING;
 
-    for (const date of dates) {
-      this.assertDateInMembership(date, membership.startAt, membership.endAt);
-    }
-
-    const seat = await this.seatRepo.findOne({
-      where: { id: dto.seatId },
-      relations: ['room'],
-    });
-    if (!seat) throw new NotFoundException('座位不存在');
-    if (!seat.bookable) throw new BadRequestException('该座位暂不可预约');
-
-    const existingOnDates = await this.reservationRepo.find({
-      where: { seatId: dto.seatId, reserveDate: In(dates) },
-    });
-    const conflict = existingOnDates.find((r) => r.membershipId !== membershipId);
-    if (conflict) {
-      throw new BadRequestException(
-        booking.multiDay
-          ? `该座位在 ${conflict.reserveDate} 已被预约，无法固定`
-          : '该座位已被预约',
-      );
-    }
+    let activeMembership = membership;
 
     await this.reservationRepo.manager.transaction(async (em) => {
-      const repo = em.getRepository(Reservation);
-      for (const date of dates) {
-        let reservation = await repo.findOne({
-          where: { membershipId, reserveDate: date },
+      const reservationRepo = em.getRepository(Reservation);
+
+      for (const item of assignments) {
+        const conflict = await reservationRepo.findOne({
+          where: { seatId: item.seatId, reserveDate: item.date },
+        });
+        if (conflict && conflict.membershipId !== membershipId) {
+          throw new BadRequestException(
+            `${item.date} 座位 ${item.seatLabel} 刚被他人预约，请重新选择`,
+          );
+        }
+      }
+
+      if (pending) {
+        activeMembership = await this.membershipService.activateFromReservation(
+          membershipId,
+          dates[0],
+          em,
+        );
+      }
+
+      for (const item of assignments) {
+        let reservation = await reservationRepo.findOne({
+          where: { membershipId, reserveDate: item.date },
         });
         if (reservation) {
-          reservation.seatId = dto.seatId;
+          reservation.seatId = item.seatId;
         } else {
-          reservation = repo.create({
+          reservation = reservationRepo.create({
             membershipId,
-            seatId: dto.seatId,
-            reserveDate: date,
+            seatId: item.seatId,
+            reserveDate: item.date,
           });
         }
-        await repo.save(reservation);
+        try {
+          await reservationRepo.save(reservation);
+        } catch (err) {
+          if (
+            err instanceof QueryFailedError &&
+            (err as QueryFailedError & { driverError?: { code?: string } })
+              .driverError?.code === '23505'
+          ) {
+            throw new BadRequestException(
+              `${item.date} 座位 ${item.seatLabel} 刚被他人预约，请重新选择`,
+            );
+          }
+          throw err;
+        }
       }
     });
 
+    const booking = this.buildBookingMeta(activeMembership, dates, false);
     const today = this.todayDateStr();
     const displayDate = dates.includes(today) ? today : dates[0];
-    const saved = await this.reservationRepo.findOne({
-      where: { membershipId, reserveDate: displayDate },
-    });
+    const displayAssignment =
+      assignments.find((a) => a.date === displayDate) || assignments[0];
 
     return this.formatReservationResult(
-      saved?.id || dto.seatId,
-      `${seat.room.code}-${seat.seatNo}`,
-      seat.room.code,
-      seat.seatNo,
+      displayAssignment.seatId,
+      displayAssignment.seatLabel,
+      displayAssignment.roomCode,
+      displayAssignment.seatNo,
       displayDate,
       booking,
+      assignments,
+      activeMembership,
+      dates.includes(today),
     );
   }
 
@@ -378,7 +583,6 @@ export class SeatService {
     };
   }
 
-  /** 管理端：按日期查看各座位对应的兑换码 */
   async listReservationsByDateForAdmin(dateStr: string) {
     const reservations = await this.reservationRepo.find({
       where: { reserveDate: dateStr },
@@ -402,7 +606,6 @@ export class SeatService {
     };
   }
 
-  /** 管理端：按兑换码查看预约的日期与座位 */
   async listReservationsByCodeForAdmin(codeInput: string) {
     const code = codeInput.replace(/\D/g, '');
     if (!/^\d{11}$/.test(code)) {
@@ -446,7 +649,6 @@ export class SeatService {
     };
   }
 
-  /** 管理端：取消单条预约 */
   async cancelReservationForAdmin(id: string) {
     const reservation = await this.reservationRepo.findOne({
       where: { id },

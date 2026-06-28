@@ -4,9 +4,19 @@ export class CreateReservationDto {
   @IsUUID()
   seatId!: string;
 
+  /** 起始日 YYYY-MM-DD；待激活时必填，已激活时不可修改 */
   @IsOptional()
   @IsDateString()
-  date?: string;
+  startDate?: string;
+}
+
+export class PreviewSeatPlanDto {
+  @IsUUID()
+  seatId!: string;
+
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
 }
 
 export class UpdateSeatBookableDto {

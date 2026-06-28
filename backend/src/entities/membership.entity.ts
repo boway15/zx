@@ -10,6 +10,7 @@ import { User } from './user.entity';
 import { Product } from './product.entity';
 
 export enum MembershipStatus {
+  PENDING = 'pending',
   ACTIVE = 'active',
   EXPIRED = 'expired',
 }
@@ -25,11 +26,11 @@ export class Membership {
   @Column({ name: 'product_id' })
   productId!: string;
 
-  @Column({ name: 'start_at', type: 'timestamptz' })
-  startAt!: Date;
+  @Column({ name: 'start_at', type: 'timestamptz', nullable: true })
+  startAt!: Date | null;
 
-  @Column({ name: 'end_at', type: 'timestamptz' })
-  endAt!: Date;
+  @Column({ name: 'end_at', type: 'timestamptz', nullable: true })
+  endAt!: Date | null;
 
   @Column({ name: 'source_order_id', nullable: true })
   sourceOrderId?: string;

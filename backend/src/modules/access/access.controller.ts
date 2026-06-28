@@ -28,15 +28,31 @@ export class AccessController {
     return { success: true, data };
   }
 
+  @Post('admin/unlock')
+  @UseGuards(AdminAuthGuard)
+  async adminUnlock() {
+    const data = await this.accessService.unlockByAdmin();
+    return { success: true, data, message: data.message };
+  }
+
+  @Get('admin/temp-passcode')
+  @UseGuards(AdminAuthGuard)
+  async adminTempPasscode() {
+    const data = await this.accessService.getAdminDailyPasscode();
+    return { success: true, data };
+  }
+
   @Get('admin/logs')
   @UseGuards(AdminAuthGuard)
   async logs(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('code') code?: string,
   ) {
     const data = await this.accessService.listLogs(
       parseInt(page || '1', 10),
       parseInt(limit || '20', 10),
+      code,
     );
     return { success: true, data };
   }

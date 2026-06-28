@@ -84,7 +84,7 @@ export class AuthService {
 
   signMembershipToken(membershipId: string, expiresAt: Date) {
     const ttlSec = Math.max(
-      60,
+      3600,
       Math.floor((expiresAt.getTime() - Date.now()) / 1000),
     );
     const token = this.jwtService.sign(

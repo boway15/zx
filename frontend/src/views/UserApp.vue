@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { useSessionStore } from '@/stores/session';
+import { useSessionStore, type SessionInfo } from '@/stores/session';
 import api, { ApiResponse } from '@/api';
-import { showLoadingToast, closeToast, showDialog, showSuccessToast, showConfirmDialog } from 'vant';
+import { showLoadingToast, showDialog, showSuccessToast, showConfirmDialog } from 'vant';
+import axios from 'axios';
+import { fetchAndShowReservationDetail } from '@/utils/reservation-detail';
 import SeatBooking from '@/components/SeatBooking.vue';
+import ReservationDetailDialog from '@/components/ReservationDetailDialog.vue';
 
 const session = useSessionStore();
 const LAST_REDEEM_CODE_KEY = 'lastRedeemCode';
@@ -13,6 +16,7 @@ const activeTab = ref(0);
 const adminWechatId = ref('');
 const adminWechatQrcodeUrl = ref('');
 const meituanUrl = ref('');
+const storeName = ref('朴素自习室');
 const unlocking = ref(false);
 const businessHours = ref({ start: '08:00', end: '22:00', isOpen: true });
 const helpTab = ref<'entry' | 'wechat' | 'meituan' | 'douyin'>('entry');
@@ -38,12 +42,15 @@ function formatBusinessHoursRange() {
 
 async function loadSettings() {
   const res = await api.get<ApiResponse<{
+    storeName: string;
     businessHoursStart: string;
     businessHoursEnd: string;
     adminWechatId: string;
     adminWechatQrcodeUrl: string;
     meituanUrl: string;
   }>>('/settings/public');
+  storeName.value = res.data.storeName || '朴素自习室';
+  document.title = storeName.value;
   adminWechatId.value = res.data.adminWechatId || '';
   adminWechatQrcodeUrl.value = res.data.adminWechatQrcodeUrl || '';
   meituanUrl.value = res.data.meituanUrl || '';
@@ -64,20 +71,6 @@ function isWithinBusinessHours(start: string, end: string) {
   return current >= startMin && current <= endMin;
 }
 
-function formatDateTime(value: string | Date) {
-  return new Date(value).toLocaleString('zh-CN');
-}
-
-interface CodePreview {
-  isFirstActivation: boolean;
-  code: string;
-  productName: string;
-  productDescription?: string;
-  redeemValidUntil?: string;
-  membershipStartAt?: string;
-  membershipEndAt?: string;
-}
-
 function loadLastRedeemCode() {
   const saved = localStorage.getItem(LAST_REDEEM_CODE_KEY);
   if (saved) codeInput.value = saved;
@@ -87,22 +80,6 @@ function saveLastRedeemCode(code: string) {
   localStorage.setItem(LAST_REDEEM_CODE_KEY, code);
 }
 
-function buildActivationConfirmMessage(preview: CodePreview) {
-  const lines = [
-    `卡类型：${preview.productName}`,
-    `生效时间：${formatDateTime(preview.membershipStartAt!)}`,
-    `有效期至：${formatDateTime(preview.membershipEndAt!)}`,
-  ];
-  if (preview.redeemValidUntil) {
-    lines.push(`兑换码激活期限：${formatDateTime(preview.redeemValidUntil)}`);
-  }
-  if (preview.productDescription) {
-    lines.push(`说明：${preview.productDescription}`);
-  }
-  lines.push('', '激活后再次输入本兑换码即可直接进入，无需重复确认。');
-  return lines.join('\n');
-}
-
 async function submitCode() {
   const digits = codeInput.value.replace(/\D/g, '');
   if (digits.length !== 11) {
@@ -110,54 +87,106 @@ async function submitCode() {
     return;
   }
   loading.value = true;
-  showLoadingToast({ message: '验证中...', forbidClick: true });
+  const loadingToast = showLoadingToast({ message: '查询中...', forbidClick: true });
   try {
-    const previewRes = await api.post<ApiResponse<CodePreview>>('/redemption/preview', { code: digits });
-    const preview = previewRes.data;
+    const previewRes = await api.post<ApiResponse<{
+      isFirstRedeem: boolean;
+      isPending?: boolean;
+      productName: string;
+      naturalDays?: number;
+      redeemValidUntil?: string;
+      membershipEndAt?: string;
+    }>>('/redemption/preview', { code: digits }, { skipErrorToast: true });
 
-    if (preview.isFirstActivation) {
-      closeToast();
-      try {
-        await showConfirmDialog({
-          title: '确认激活会员卡',
-          message: buildActivationConfirmMessage(preview),
-          confirmButtonText: '确认激活',
-          cancelButtonText: '取消',
-        });
-      } catch {
-        return;
-      }
-      showLoadingToast({ message: '激活中...', forbidClick: true });
+    loadingToast.close();
+    const preview = previewRes.data;
+    let message = `卡类型：${preview.productName}`;
+    if (preview.isFirstRedeem) {
+      message += `\n使用天数：${preview.naturalDays} 天`;
+      message += `\n兑换期限至：${new Date(preview.redeemValidUntil!).toLocaleString('zh-CN')}`;
+      message += '\n\n确认后将消耗兑换码，请继续完成「预约座位」激活。';
+    } else if (preview.isPending) {
+      message += '\n状态：待预约激活';
+      message += `\n兑换期限至：${new Date(preview.redeemValidUntil!).toLocaleString('zh-CN')}`;
+    } else {
+      message += `\n有效期至：${new Date(preview.membershipEndAt!).toLocaleString('zh-CN')}`;
     }
 
-    await session.accessByCode(digits);
-    saveLastRedeemCode(digits);
-    showSuccessToast(preview.isFirstActivation ? '激活成功' : '验证成功');
-    await refreshStatus();
+    try {
+      await showConfirmDialog({
+        title: preview.isFirstRedeem ? '确认兑换并进入' : '确认进入',
+        message,
+        confirmButtonText: '确认',
+        cancelButtonText: '取消',
+      });
+    } catch {
+      return;
+    }
+
+    const accessToast = showLoadingToast({ message: '验证中...', forbidClick: true });
+    try {
+      const data = await session.accessByCode(digits);
+      accessToast.close();
+      saveLastRedeemCode(digits);
+      showSuccessToast(data.membership.pending ? '请预约座位完成激活' : '验证成功');
+      if (data.membership.pending || !data.reservation) {
+        activeTab.value = 1;
+      }
+      await refreshStatus();
+    } finally {
+      accessToast.close();
+    }
+  } catch (err) {
+    loadingToast.close();
+    const message = axios.isAxiosError(err)
+      ? err.response?.data?.message || err.message
+      : '验证失败';
+    await showDialog({ title: '提示', message: String(message) });
   } finally {
     loading.value = false;
-    closeToast();
   }
 }
 
-function formatReservationLabel(reservation: NonNullable<typeof session.info>['reservation']) {
-  if (!reservation) return '';
-  if (reservation.multiDay && reservation.dateFrom && reservation.dateTo && reservation.dayCount) {
-    return `${reservation.seatLabel} · 固定 ${reservation.dayCount} 天`;
+type ActiveReservation = NonNullable<SessionInfo['reservation']>;
+
+function formatUnlockBannerLabel(reservation: ActiveReservation) {
+  return reservation.multiDay ? '固定座位' : '今日座位';
+}
+
+function formatUnlockBannerSeat(reservation: ActiveReservation) {
+  if (reservation.multiDay && reservation.dayCount) {
+    const mixed = reservation.assignments?.some((a) => !a.isPreferred);
+    const primary = reservation.assignments?.find((a) => a.isPreferred)?.seatLabel
+      || reservation.seatLabel;
+    if (mixed) {
+      return `${primary} · ${reservation.dayCount} 天（部分换座）`;
+    }
+    return `${primary} · 固定 ${reservation.dayCount} 天`;
   }
   return reservation.seatLabel;
 }
 
-function formatReservationSub(reservation: NonNullable<typeof session.info>['reservation']) {
-  if (!reservation?.multiDay || !reservation.dateFrom || !reservation.dateTo) return '';
-  return `${reservation.dateFrom} 至 ${reservation.dateTo}`;
+function formatUnlockBannerHint(reservation: ActiveReservation) {
+  if (!reservation.multiDay) return '点击查看预约详情';
+  if (reservation.hasTodayReservation) {
+    return `今日座位 ${reservation.seatLabel} · 点击查看每日安排`;
+  }
+  return '今日暂无座位 · 点击查看全部安排';
 }
 
 async function refreshStatus() {
   if (!session.isActive) return;
   const res = await api.get<ApiResponse<{
+    pending?: boolean;
     businessHours: { start: string; end: string; isOpen: boolean };
     passcode: string | null;
+    membership: {
+      status: string;
+      pending: boolean;
+      startAt: string | null;
+      endAt: string | null;
+      productName: string;
+    } | null;
     reservation: {
       seatLabel: string;
       reserveDate: string;
@@ -165,10 +194,21 @@ async function refreshStatus() {
       dateFrom?: string | null;
       dateTo?: string | null;
       dayCount?: number;
+      hasTodayReservation?: boolean;
+      assignments?: { date: string; seatLabel: string; isPreferred: boolean }[];
     } | null;
   }>>('/access/status');
   businessHours.value = res.data.businessHours;
   if (session.info) {
+    if (res.data.membership) {
+      session.updateMembership({
+        pending: res.data.membership.pending,
+        status: res.data.membership.status,
+        startAt: res.data.membership.startAt,
+        endAt: res.data.membership.endAt,
+        productName: res.data.membership.productName,
+      });
+    }
     if (res.data.passcode) {
       session.info.passcode = res.data.passcode;
     }
@@ -176,8 +216,41 @@ async function refreshStatus() {
   }
 }
 
+async function showMyReservation() {
+  const data = await fetchAndShowReservationDetail();
+  if (data?.seatLabel && data.reserveDate && session.info) {
+    session.updateReservation({
+      seatLabel: data.seatLabel,
+      reserveDate: data.reserveDate,
+      multiDay: data.multiDay,
+      dateFrom: data.dateFrom,
+      dateTo: data.dateTo,
+      dayCount: data.dayCount,
+      hasTodayReservation: data.hasTodayReservation,
+      assignments: data.assignments,
+    });
+  }
+}
+
 async function unlock() {
   if (!session.isActive) return;
+  if (session.isPending) {
+    showDialog({
+      title: '提示',
+      message: '会员卡尚未激活，请先前往「预约座位」完成预约',
+      confirmButtonText: '去预约',
+    }).then(() => {
+      activeTab.value = 1;
+    });
+    return;
+  }
+  if (!session.isMembershipActiveToday()) {
+    showDialog({
+      title: '提示',
+      message: '当前不在会员卡有效期内，无法开门。请在预约的使用日内再试。',
+    });
+    return;
+  }
   if (!businessHours.value.isOpen) {
     showDialog({
       title: '提示',
@@ -185,21 +258,32 @@ async function unlock() {
     });
     return;
   }
-  if (!session.info?.reservation) {
+  if (!session.info?.reservation?.hasTodayReservation) {
     showDialog({
       title: '提示',
-      message: '您今日尚未预约座位，请先前往「预约座位」预约后再开门',
-      confirmButtonText: '去预约',
-    }).then(() => {
-      activeTab.value = 1;
+      message: session.info?.reservation
+        ? '今日无预约座位。您可在「我的预约」查看全部安排，或在使用日当天再来开门。'
+        : '您尚未预约座位，请先前往「预约座位」完成预约',
+      confirmButtonText: session.info?.reservation ? '查看我的预约' : '去预约',
+    }).then((action) => {
+      if (action === 'confirm') {
+        if (session.info?.reservation) {
+          showMyReservation();
+        } else {
+          activeTab.value = 1;
+        }
+      }
     });
     return;
   }
+  if (!session.info?.reservation) {
+    return;
+  }
   unlocking.value = true;
-  showLoadingToast({ message: '开门中...', forbidClick: true });
+  const loadingToast = showLoadingToast({ message: '开门中...', forbidClick: true });
   try {
     const res = await api.post<ApiResponse<{ method: string; passcode?: string; reservation?: { seatLabel: string } }>>('/access/unlock');
-    closeToast();
+    loadingToast.close();
     if (res.data.method === 'remote') {
       showSuccessToast(`开门成功，请前往 ${res.data.reservation?.seatLabel || session.info.reservation.seatLabel}`);
     } else if (res.data.passcode) {
@@ -208,9 +292,10 @@ async function unlock() {
         message: `远程开门失败，请在门锁键盘输入：\n\n${res.data.passcode}\n\n您的座位：${session.info.reservation.seatLabel}`,
       });
     }
+  } catch {
+    loadingToast.close();
   } finally {
     unlocking.value = false;
-    closeToast();
   }
 }
 
@@ -267,7 +352,6 @@ function openMeituan() {
 }
 
 onMounted(() => {
-  document.title = '朴素自习室';
   loadSettings();
   if (session.isActive) {
     refreshStatus();
@@ -281,7 +365,7 @@ onMounted(() => {
   <div class="user-app">
     <div v-if="!session.isActive" class="home-page">
       <header class="home-brand">
-        <p class="brand-title">朴素自习·办公·考研·考公</p>
+        <p class="brand-title">{{ storeName }} · 办公·考研·考公</p>
         <p class="brand-desc">面向务实学习、工作者的安静自习空间</p>
       </header>
 
@@ -309,7 +393,7 @@ onMounted(() => {
             进入自习室
           </van-button>
         </van-form>
-        <p class="redeem-tip">收到兑换码后请尽快激活（7天内有效，注意保密）；激活后预约座位，营业时间内开门</p>
+        <p class="redeem-tip">输入管理员提供的11位兑换码进入；进入后完成「预约座位」，方可进行开门。</p>
       </section>
 
       <section class="home-section contact-section">
@@ -355,9 +439,9 @@ onMounted(() => {
         </div>
         <div class="help-panel">
           <ol v-if="helpTab === 'entry'" class="help-steps">
-            <li>输入兑换码激活会员卡</li>
-            <li>前往「预约座位」选择今日座位</li>
-            <li>营业时间内点击「开门」进入</li>
+            <li>输入兑换码完成兑换</li>
+            <li>前往「预约座位」选择日期并确认预约（预约后激活）</li>
+            <li>在有效使用日、营业时间内点击「开门」进入</li>
           </ol>
           <ol v-else-if="helpTab === 'wechat'" class="help-steps">
             <li>复制微信号，添加管理员好友</li>
@@ -381,7 +465,7 @@ onMounted(() => {
           </ol>
         </div>
         <p class="help-hours">
-          营业时间 {{ formatBusinessHoursRange() }}（{{ businessHours.isOpen ? '营业中' : '已打烊' }}）
+          营业时间 {{ formatBusinessHoursRange() }}
         </p>
       </section>
 
@@ -413,31 +497,30 @@ onMounted(() => {
     </div>
 
     <template v-else>
-      <van-notice-bar
-        wrapable
-        :scrollable="false"
-        :text="`兑换码 ${session.info!.code} · ${session.formatValidity()}`"
-      />
-
       <van-tabs v-model:active="activeTab" sticky offset-top="0" class="main-tabs">
         <van-tab title="使用">
           <div class="card-section">
             <van-cell-group inset>
+              <van-cell title="兑换码" :value="session.info!.code" />
               <van-cell title="卡类型" :value="session.info!.membership.productName" />
-              <van-cell title="生效时间" :value="new Date(session.info!.membership.startAt).toLocaleString('zh-CN')" />
-              <van-cell title="有效期至" :value="new Date(session.info!.membership.endAt).toLocaleString('zh-CN')" />
               <van-cell
-                title="营业时间"
-                :value="`${formatBusinessHoursRange()}${businessHours.isOpen ? '（营业中）' : '（已打烊）'}`"
+                v-if="session.isPending"
+                title="状态"
+                value="待预约激活"
+                value-class="unreserved"
+              />
+              <template v-else>
+                <van-cell title="生效时间" :value="session.info!.membership.startAt ? new Date(session.info!.membership.startAt).toLocaleString('zh-CN') : '-'" />
+                <van-cell title="有效期至" :value="session.info!.membership.endAt ? new Date(session.info!.membership.endAt).toLocaleString('zh-CN') : '-'" />
+              </template>
+              <van-cell
+                v-if="session.isPending"
+                title="座位"
+                value="待预约"
+                value-class="unreserved"
               />
               <van-cell
-                v-if="session.info!.reservation"
-                title="固定座位"
-                :value="formatReservationLabel(session.info!.reservation)"
-                :label="formatReservationSub(session.info!.reservation) || undefined"
-              />
-              <van-cell
-                v-else
+                v-else-if="!session.info!.reservation"
                 title="今日座位"
                 value="未预约"
                 value-class="unreserved"
@@ -452,18 +535,31 @@ onMounted(() => {
           </div>
 
           <div class="unlock-section">
-            <div v-if="session.info!.reservation" class="reservation-banner">
-              <p class="reservation-label">
-                {{ session.info!.reservation.multiDay ? '固定座位' : '今日预约座位' }}
-              </p>
-              <p class="reservation-seat">{{ session.info!.reservation.seatLabel }}</p>
+            <van-notice-bar
+              v-if="session.isPending"
+              wrapable
+              :scrollable="false"
+              text="请先完成预约以激活会员卡，激活后在有效使用日内可开门"
+              color="#ed6a0c"
+              background="#fffbe8"
+              left-icon="warning-o"
+            />
+            <button
+              v-else-if="session.info!.reservation"
+              type="button"
+              class="reservation-banner reservation-banner-clickable"
+              @click="showMyReservation"
+            >
+              <p class="reservation-label">{{ formatUnlockBannerLabel(session.info!.reservation) }}</p>
+              <p class="reservation-seat">{{ formatUnlockBannerSeat(session.info!.reservation) }}</p>
               <p
                 v-if="session.info!.reservation.multiDay && session.info!.reservation.dateFrom"
                 class="reservation-range"
               >
                 {{ session.info!.reservation.dateFrom }} 至 {{ session.info!.reservation.dateTo }}
               </p>
-            </div>
+              <p class="reservation-detail-link">{{ formatUnlockBannerHint(session.info!.reservation) }}</p>
+            </button>
             <van-notice-bar
               v-else
               wrapable
@@ -476,7 +572,6 @@ onMounted(() => {
             <button class="unlock-btn" :disabled="unlocking" @click="unlock">
               {{ unlocking ? '开门中...' : '开门' }}
             </button>
-            <p class="hint">营业时间 {{ formatBusinessHoursRange() }} · 远程开门，失败时将提示备用密码</p>
           </div>
 
           <div class="btn-wrap">
@@ -484,13 +579,24 @@ onMounted(() => {
               切换兑换码
             </van-button>
           </div>
+
+          <div class="session-footer">
+            <p class="hint">营业时间 {{ formatBusinessHoursRange() }} · 远程开门，失败时将提示备用密码</p>
+            <button type="button" class="footer-wechat" @click="copyWechatId">
+              <span class="footer-wechat-label">管理员微信</span>
+              <span class="footer-wechat-id">{{ adminWechatId || '待配置' }}</span>
+              <span class="footer-wechat-action">点击复制</span>
+            </button>
+          </div>
         </van-tab>
 
         <van-tab title="预约座位">
-          <SeatBooking />
+          <SeatBooking :active="activeTab === 1" />
         </van-tab>
       </van-tabs>
     </template>
+
+    <ReservationDetailDialog />
   </div>
 </template>
 
@@ -849,7 +955,45 @@ onMounted(() => {
 }
 
 .btn-wrap {
-  padding: 16px;
+  padding: 16px 16px 4px;
+}
+
+.session-footer {
+  padding: 16px 16px 24px;
+  text-align: center;
+}
+
+.footer-wechat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 999px;
+  background: #f7f8fa;
+  font-size: 12px;
+  color: var(--tt-text-secondary);
+  cursor: pointer;
+}
+
+.footer-wechat:active {
+  background: #eef0f3;
+}
+
+.footer-wechat-label {
+  color: var(--tt-text-secondary);
+}
+
+.footer-wechat-id {
+  color: var(--tt-text);
+  font-weight: 500;
+}
+
+.footer-wechat-action {
+  color: #07c160;
 }
 
 .card-section {
@@ -874,6 +1018,15 @@ onMounted(() => {
   max-width: 280px;
 }
 
+.reservation-banner-clickable {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.reservation-banner-clickable:active {
+  background: #fff0f0;
+}
+
 .reservation-label {
   font-size: 13px;
   color: var(--tt-text-secondary);
@@ -881,7 +1034,8 @@ onMounted(() => {
 }
 
 .reservation-seat {
-  font-size: 22px;
+  font-size: 18px;
+  line-height: 1.45;
   font-weight: 600;
   color: var(--tt-red);
 }
@@ -890,6 +1044,12 @@ onMounted(() => {
   margin-top: 6px;
   font-size: 12px;
   color: var(--tt-text-secondary);
+}
+
+.reservation-detail-link {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #07c160;
 }
 
 .user-app :deep(.unreserved) {
@@ -919,9 +1079,10 @@ onMounted(() => {
 }
 
 .hint {
-  margin-top: 14px;
+  margin: 0;
   font-size: 12px;
   color: var(--tt-text-secondary);
+  line-height: 1.6;
 }
 
 .user-app :deep(.main-tabs .van-tabs__wrap) {

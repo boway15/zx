@@ -19,6 +19,7 @@ const router = createRouter({
         { path: 'reservations', component: () => import('@/views/admin/ReservationsAdmin.vue') },
         { path: 'logs', component: () => import('@/views/admin/AccessLogsAdmin.vue') },
         { path: 'settings', component: () => import('@/views/admin/SettingsAdmin.vue') },
+        { path: 'ttlock', component: () => import('@/views/admin/TtlockAdmin.vue') },
       ],
     },
   ],

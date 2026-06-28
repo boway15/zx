@@ -40,10 +40,10 @@ export class OrderController {
 
   @Post('wechat/notify')
   async wechatNotify(@Req() req: Request, @Headers() headers: Record<string, string>) {
-    const body = req.body as { out_trade_no?: string; transaction_id?: string };
-    if (body.out_trade_no && body.transaction_id) {
-      await this.orderService.handlePaymentSuccess(body.out_trade_no, body.transaction_id);
-    }
+    await this.orderService.handleWechatNotify(
+      req.body as Record<string, unknown>,
+      headers,
+    );
     return { code: 'SUCCESS', message: '成功' };
   }
 

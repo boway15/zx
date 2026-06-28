@@ -25,7 +25,6 @@ export class SettingsService implements OnModuleInit {
 
   async onModuleInit() {
     await this.seedDefaults();
-    await this.set('store_name', '朴素自习室');
     await this.loadCache();
   }
 

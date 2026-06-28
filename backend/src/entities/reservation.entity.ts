@@ -12,6 +12,7 @@ import { Seat } from './seat.entity';
 
 @Entity('reservations')
 @Unique(['membershipId', 'reserveDate'])
+@Unique(['seatId', 'reserveDate'])
 export class Reservation {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

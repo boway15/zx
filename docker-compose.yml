@@ -20,7 +20,8 @@ services:
     environment:
       DB_HOST: postgres
       TZ: Asia/Shanghai
-      DB_SYNC: "true"
+      NODE_ENV: development
+      DB_SYNC: ${DB_SYNC:-false}
       UPLOAD_DIR: /app/uploads
     volumes:
       - uploads_data:/app/uploads
