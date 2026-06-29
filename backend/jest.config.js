@@ -1,3 +1,5 @@
+process.env.TZ = 'Asia/Shanghai';
+
 module.exports = {
   moduleFileExtensions: ['js', 'json', 'ts'],
   rootDir: 'src',
