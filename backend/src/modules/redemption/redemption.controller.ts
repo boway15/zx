@@ -8,7 +8,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { RedemptionService } from './redemption.service';
-import { CreateRedemptionCodeDto, ExtendRedemptionDto, RedeemCodeDto } from './redemption.dto';
+import { CreateRedemptionCodeDto, RedeemCodeDto } from './redemption.dto';
 import { AdminAuthGuard } from '../../common/guards/auth.guards';
 import { CurrentAdmin } from '../../common/decorators/current-user.decorator';
 import { RedemptionCodeStatus } from '../../entities/redemption-code.entity';
@@ -47,11 +47,13 @@ export class RedemptionController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('status') status?: RedemptionCodeStatus,
+    @Query('code') code?: string,
   ) {
     const data = await this.redemptionService.list(
       parseInt(page || '1', 10),
       parseInt(limit || '20', 10),
       status,
+      code,
     );
     return { success: true, data };
   }
@@ -61,12 +63,5 @@ export class RedemptionController {
   async revoke(@Param('id') id: string) {
     const data = await this.redemptionService.revoke(id);
     return { success: true, data, message: '已作废' };
-  }
-
-  @Post('admin/:id/extend')
-  @UseGuards(AdminAuthGuard)
-  async extend(@Param('id') id: string, @Body() dto: ExtendRedemptionDto) {
-    const data = await this.redemptionService.extendRedeemValidDays(id, dto.days);
-    return { success: true, data, message: '兑换期限已延长' };
   }
 }

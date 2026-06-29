@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { useSessionStore, type SessionInfo } from '@/stores/session';
 import api, { ApiResponse } from '@/api';
-import { showLoadingToast, showDialog, showSuccessToast, showConfirmDialog } from 'vant';
+import { showLoadingToast, showDialog, showSuccessToast } from 'vant';
 import axios from 'axios';
 import { fetchAndShowReservationDetail } from '@/utils/reservation-detail';
 import SeatBooking from '@/components/SeatBooking.vue';
@@ -18,6 +18,7 @@ const adminWechatQrcodeUrl = ref('');
 const meituanUrl = ref('');
 const storeName = ref('朴素自习室');
 const unlocking = ref(false);
+const restoring = ref(false);
 const businessHours = ref({ start: '08:00', end: '22:00', isOpen: true });
 const helpTab = ref<'entry' | 'wechat' | 'meituan' | 'douyin'>('entry');
 
@@ -80,6 +81,48 @@ function saveLastRedeemCode(code: string) {
   localStorage.setItem(LAST_REDEEM_CODE_KEY, code);
 }
 
+function clearLastRedeemCode() {
+  localStorage.removeItem(LAST_REDEEM_CODE_KEY);
+}
+
+async function enterWithCode(digits: string, options?: { silent?: boolean }) {
+  const data = await session.accessByCode(digits);
+  saveLastRedeemCode(digits);
+  if (!options?.silent) {
+    showSuccessToast(data.membership.pending ? '请预约座位完成激活' : '已进入');
+  }
+  activeTab.value = data.membership.pending || !data.reservation ? 1 : 0;
+  await refreshStatus();
+  return data;
+}
+
+async function tryRestoreSession() {
+  const saved = localStorage.getItem(LAST_REDEEM_CODE_KEY);
+  if (!saved) {
+    loadLastRedeemCode();
+    return;
+  }
+
+  codeInput.value = saved;
+  restoring.value = true;
+  try {
+    const previewRes = await api.post<ApiResponse<{
+      isFirstRedeem: boolean;
+    }>>('/redemption/preview', { code: saved }, { skipErrorToast: true });
+
+    if (previewRes.data.isFirstRedeem) {
+      return;
+    }
+
+    await enterWithCode(saved, { silent: true });
+  } catch {
+    clearLastRedeemCode();
+    codeInput.value = '';
+  } finally {
+    restoring.value = false;
+  }
+}
+
 async function submitCode() {
   const digits = codeInput.value.replace(/\D/g, '');
   if (digits.length !== 11) {
@@ -87,62 +130,16 @@ async function submitCode() {
     return;
   }
   loading.value = true;
-  const loadingToast = showLoadingToast({ message: '查询中...', forbidClick: true });
+  const accessToast = showLoadingToast({ message: '验证中...', forbidClick: true });
   try {
-    const previewRes = await api.post<ApiResponse<{
-      isFirstRedeem: boolean;
-      isPending?: boolean;
-      productName: string;
-      naturalDays?: number;
-      redeemValidUntil?: string;
-      membershipEndAt?: string;
-    }>>('/redemption/preview', { code: digits }, { skipErrorToast: true });
-
-    loadingToast.close();
-    const preview = previewRes.data;
-    let message = `卡类型：${preview.productName}`;
-    if (preview.isFirstRedeem) {
-      message += `\n使用天数：${preview.naturalDays} 天`;
-      message += `\n兑换期限至：${new Date(preview.redeemValidUntil!).toLocaleString('zh-CN')}`;
-      message += '\n\n确认后将消耗兑换码，请继续完成「预约座位」激活。';
-    } else if (preview.isPending) {
-      message += '\n状态：待预约激活';
-      message += `\n兑换期限至：${new Date(preview.redeemValidUntil!).toLocaleString('zh-CN')}`;
-    } else {
-      message += `\n有效期至：${new Date(preview.membershipEndAt!).toLocaleString('zh-CN')}`;
-    }
-
-    try {
-      await showConfirmDialog({
-        title: preview.isFirstRedeem ? '确认兑换并进入' : '确认进入',
-        message,
-        confirmButtonText: '确认',
-        cancelButtonText: '取消',
-      });
-    } catch {
-      return;
-    }
-
-    const accessToast = showLoadingToast({ message: '验证中...', forbidClick: true });
-    try {
-      const data = await session.accessByCode(digits);
-      accessToast.close();
-      saveLastRedeemCode(digits);
-      showSuccessToast(data.membership.pending ? '请预约座位完成激活' : '验证成功');
-      if (data.membership.pending || !data.reservation) {
-        activeTab.value = 1;
-      }
-      await refreshStatus();
-    } finally {
-      accessToast.close();
-    }
+    await enterWithCode(digits);
   } catch (err) {
-    loadingToast.close();
     const message = axios.isAxiosError(err)
       ? err.response?.data?.message || err.message
       : '验证失败';
     await showDialog({ title: '提示', message: String(message) });
   } finally {
+    accessToast.close();
     loading.value = false;
   }
 }
@@ -307,7 +304,7 @@ function showPasscode() {
 function exitSession() {
   session.clear();
   activeTab.value = 0;
-  loadLastRedeemCode();
+  clearLastRedeemCode();
 }
 
 async function copyText(text: string, emptyMessage: string) {
@@ -351,19 +348,29 @@ function openMeituan() {
   window.open(meituanUrl.value, '_blank', 'noopener,noreferrer');
 }
 
-onMounted(() => {
+watch(activeTab, (tab) => {
+  if (tab === 0 && session.isActive) {
+    refreshStatus();
+  }
+});
+
+onMounted(async () => {
   loadSettings();
   if (session.isActive) {
-    refreshStatus();
+    activeTab.value = 0;
+    await refreshStatus();
   } else {
-    loadLastRedeemCode();
+    await tryRestoreSession();
   }
 });
 </script>
 
 <template>
   <div class="user-app">
-    <div v-if="!session.isActive" class="home-page">
+    <div v-if="restoring" class="restore-screen">
+      <van-loading vertical size="24px">正在恢复...</van-loading>
+    </div>
+    <div v-else-if="!session.isActive" class="home-page">
       <header class="home-brand">
         <p class="brand-title">{{ storeName }} · 办公·考研·考公</p>
         <p class="brand-desc">面向务实学习、工作者的安静自习空间</p>
@@ -605,6 +612,13 @@ onMounted(() => {
   min-height: 100vh;
   padding-bottom: 24px;
   background: var(--tt-bg);
+}
+
+.restore-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .code-section {

@@ -17,11 +17,15 @@ interface RedemptionCode {
   externalPlatform?: string;
   externalVoucher?: string;
   product: { name: string };
-  usedAt?: string;
+  usedAt?: string | null;
+  activatedAt?: string | null;
+  membershipEndAt?: string | null;
 }
 
 const products = ref<Product[]>([]);
 const codes = ref<RedemptionCode[]>([]);
+const codeQuery = ref('');
+const loading = ref(false);
 const showCreate = ref(false);
 const form = ref({
   productId: '',
@@ -34,15 +38,29 @@ const form = ref({
 });
 const creating = ref(false);
 
+function onClearSearch() {
+  codeQuery.value = '';
+  load();
+}
+
 async function load() {
-  const [pRes, cRes] = await Promise.all([
-    api.get<ApiResponse<Product[]>>('/products/admin/all'),
-    api.get<ApiResponse<{ items: RedemptionCode[] }>>('/redemption/admin'),
-  ]);
-  products.value = pRes.data;
-  codes.value = cRes.data.items;
-  if (products.value.length && !form.value.productId) {
-    form.value.productId = products.value[0].id;
+  loading.value = true;
+  try {
+    const params: Record<string, string> = {};
+    const digits = codeQuery.value.replace(/\D/g, '');
+    if (digits) params.code = digits;
+
+    const [pRes, cRes] = await Promise.all([
+      api.get<ApiResponse<Product[]>>('/products/admin/all'),
+      api.get<ApiResponse<{ items: RedemptionCode[] }>>('/redemption/admin', { params }),
+    ]);
+    products.value = pRes.data;
+    codes.value = cRes.data.items;
+    if (products.value.length && !form.value.productId) {
+      form.value.productId = products.value[0].id;
+    }
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -86,31 +104,48 @@ async function create() {
   }
 }
 
-async function revoke(id: string) {
-  await api.post(`/redemption/admin/${id}/revoke`);
-  showSuccessToast('已作废');
-  load();
+function canRevoke(status: string) {
+  return ['unused', 'bound', 'activated', 'used'].includes(status);
 }
 
-async function extendCode(id: string) {
+function revokeMessage(c: RedemptionCode) {
+  if (c.status === 'unused') {
+    return '确定作废该兑换码吗？作废后用户将无法使用。';
+  }
+  if (c.status === 'bound') {
+    return '确定作废该兑换码吗？将解除绑定，用户需重新购卡。';
+  }
+  return '确定作废该兑换码吗？将取消全部已预约座位并立即失效，适用于退款等场景，此操作不可恢复。';
+}
+
+async function revoke(c: RedemptionCode) {
   try {
     await showConfirmDialog({
-      title: '延长兑换期限',
-      message: '将把该兑换码的兑换期限从今天起重新计算 7 天。适用于用户已兑换但未及时预约的情况。',
-      confirmButtonText: '确认延长',
+      title: '作废兑换码',
+      message: revokeMessage(c),
+      confirmButtonText: '确认作废',
+      confirmButtonColor: '#ee0a24',
     });
   } catch {
     return;
   }
-  await api.post(`/redemption/admin/${id}/extend`, { days: 7 });
-  showSuccessToast('兑换期限已延长');
+
+  const res = await api.post<
+    ApiResponse<{ cancelledReservations?: number }>
+  >(`/redemption/admin/${c.id}/revoke`);
+  const count = res.data.cancelledReservations ?? 0;
+  showSuccessToast(
+    count > 0 ? `已作废，并取消 ${count} 条预约` : '已作废',
+  );
   load();
 }
 
 function statusText(s: string) {
   const map: Record<string, string> = {
     unused: '待兑换',
-    used: '已兑换',
+    bound: '待预约',
+    activated: '已激活',
+    used: '已激活',
     expired: '已过期',
     revoked: '已作废',
   };
@@ -120,6 +155,76 @@ function statusText(s: string) {
 function platformText(p?: string) {
   const map: Record<string, string> = { meituan: '美团', douyin: '抖音', other: '其他' };
   return p ? map[p] || p : '';
+}
+
+function formatDateTime(value: string) {
+  const d = new Date(value);
+  const date = d.toLocaleDateString('zh-CN');
+  const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return `${date} ${time}`;
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleDateString('zh-CN');
+}
+
+function metaText(c: RedemptionCode) {
+  return [
+    c.product.name,
+    platformText(c.externalPlatform),
+    c.externalVoucher ? `券码 ${c.externalVoucher}` : '',
+    c.note,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function statusClass(status: string) {
+  const map: Record<string, string> = {
+    unused: 'status-unused',
+    bound: 'status-bound',
+    activated: 'status-activated',
+    used: 'status-activated',
+    expired: 'status-expired',
+    revoked: 'status-revoked',
+  };
+  return map[status] || '';
+}
+
+function codeDetailRows(c: RedemptionCode) {
+  const rows: { label: string; value: string }[] = [];
+
+  if (c.activatedAt && c.membershipEndAt) {
+    rows.push({ label: '激活时间', value: formatDateTime(c.activatedAt) });
+    rows.push({
+      label: '有效期',
+      value: `${formatDate(c.activatedAt)} 至 ${formatDate(c.membershipEndAt)} 23:59`,
+    });
+    return rows;
+  }
+
+  if ((c.status === 'bound' || c.status === 'used') && c.usedAt) {
+    rows.push({ label: '绑定时间', value: formatDateTime(c.usedAt) });
+    rows.push({ label: '兑换期限至', value: formatDateTime(c.redeemValidUntil) });
+    return rows;
+  }
+
+  if (c.status === 'unused') {
+    rows.push({ label: '兑换期限至', value: formatDateTime(c.redeemValidUntil) });
+    return rows;
+  }
+
+  if (c.status === 'expired') {
+    rows.push({ label: '兑换期限至', value: formatDateTime(c.redeemValidUntil) });
+    if (c.activatedAt && c.membershipEndAt) {
+      rows.push({
+        label: '曾激活',
+        value: `${formatDate(c.activatedAt)} 至 ${formatDate(c.membershipEndAt)} 23:59`,
+      });
+    }
+  }
+
+  return rows;
 }
 
 async function copyCode(text: string) {
@@ -152,36 +257,59 @@ onMounted(load);
     <div class="header">
       <div>
         <h3>核销 / 兑换码</h3>
-        <p class="hint">点击兑换码可复制</p>
+        <p class="hint">查询兑换码状态，或点击兑换码复制</p>
       </div>
       <van-button type="primary" size="small" @click="showCreate = true">生成兑换码</van-button>
     </div>
 
-    <van-cell-group inset>
-      <van-cell
-        v-for="c in codes"
-        :key="c.id"
-        :label="[
-          platformText(c.externalPlatform),
-          c.externalVoucher ? `券码:${c.externalVoucher}` : '',
-          c.note || '',
-          `兑换期限:${new Date(c.redeemValidUntil).toLocaleString('zh-CN')}`,
-        ].filter(Boolean).join(' · ')"
-        :value="statusText(c.status)"
+    <van-cell-group inset class="search-box">
+      <van-field
+        v-model="codeQuery"
+        type="tel"
+        label="兑换码"
+        placeholder="输入11位兑换码查询"
+        maxlength="11"
+        clearable
+        :formatter="(v: string) => v.replace(/\D/g, '')"
+        @clear="onClearSearch"
+        @keyup.enter="load"
       >
-        <template #title>
-          <span class="code-text" @click.stop="copyCode(c.code)">{{ c.code }}</span>
-          <span> · {{ c.product.name }}</span>
+        <template #button>
+          <van-button size="small" type="primary" :loading="loading" @click="load">
+            查询
+          </van-button>
         </template>
-        <template v-if="c.status === 'unused'" #right-icon>
-          <van-button size="mini" type="danger" plain @click="revoke(c.id)">作废</van-button>
-        </template>
-        <template v-else-if="c.status === 'used' || c.status === 'expired'" #right-icon>
-          <van-button size="mini" type="primary" plain @click="extendCode(c.id)">延长</van-button>
-        </template>
-      </van-cell>
-      <van-empty v-if="codes.length === 0" description="暂无兑换码" />
+      </van-field>
     </van-cell-group>
+
+    <van-loading v-if="loading" class="list-loading" />
+
+    <div v-else class="code-list">
+      <article v-for="c in codes" :key="c.id" class="code-card">
+        <div class="code-card-head">
+          <div class="code-card-main">
+            <button type="button" class="code-text" @click="copyCode(c.code)">{{ c.code }}</button>
+            <p v-if="metaText(c)" class="code-meta">{{ metaText(c) }}</p>
+          </div>
+          <span class="status-tag" :class="statusClass(c.status)">{{ statusText(c.status) }}</span>
+        </div>
+
+        <dl v-if="codeDetailRows(c).length" class="code-detail">
+          <div v-for="row in codeDetailRows(c)" :key="row.label" class="code-detail-row">
+            <dt>{{ row.label }}</dt>
+            <dd>{{ row.value }}</dd>
+          </div>
+        </dl>
+
+        <div v-if="canRevoke(c.status)" class="code-actions">
+          <van-button size="mini" type="danger" plain @click="revoke(c)">作废</van-button>
+        </div>
+      </article>
+      <van-empty
+        v-if="!loading && codes.length === 0"
+        :description="codeQuery.replace(/\D/g, '') ? '未找到匹配的兑换码' : '暂无兑换码'"
+      />
+    </div>
 
     <van-popup v-model:show="showCreate" position="bottom" round :style="{ minHeight: '60%' }">
       <div class="popup-body">
@@ -251,15 +379,118 @@ h3, h4 { margin: 0; }
 .hint {
   margin: 4px 0 0;
   font-size: 12px;
-  color: #969799;
+  color: var(--tt-text-secondary, #969799);
+}
+.search-box {
+  margin-bottom: 12px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+.search-box :deep(.van-field__label) {
+  width: 4.2em;
+  color: var(--tt-text, #323233);
+}
+.list-loading {
+  display: flex;
+  justify-content: center;
+  padding: 32px 0;
 }
 .code-text {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 17px;
   font-weight: 600;
+  letter-spacing: 0.5px;
   color: var(--tt-red, #f85959);
   cursor: pointer;
 }
 .code-text:active {
   opacity: 0.7;
+}
+.code-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.code-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+.code-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.code-card-main {
+  min-width: 0;
+  flex: 1;
+}
+.code-meta {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #646566;
+  line-height: 1.5;
+}
+.status-tag {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.status-unused {
+  color: #ed6a0c;
+  background: #fff7e8;
+}
+.status-bound {
+  color: #1989fa;
+  background: #ecf5ff;
+}
+.status-activated {
+  color: #07c160;
+  background: #e8faf0;
+}
+.status-expired {
+  color: #969799;
+  background: #f2f3f5;
+}
+.status-revoked {
+  color: #ee0a24;
+  background: #ffeef0;
+}
+.code-detail {
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid #f2f3f5;
+}
+.code-detail-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.code-detail-row + .code-detail-row {
+  margin-top: 4px;
+}
+.code-detail-row dt {
+  color: #969799;
+  margin: 0;
+}
+.code-detail-row dd {
+  margin: 0;
+  color: #323233;
+  word-break: break-all;
+}
+.code-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f2f3f5;
+  text-align: right;
 }
 .popup-body {
   padding: 20px 16px 32px;

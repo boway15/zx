@@ -64,15 +64,16 @@ export class MembershipAuthGuard extends AuthGuard('jwt') {
       throw new UnauthorizedException('会员卡已过期');
     }
 
+    const code = await this.codeRepo.findOne({
+      where: { membershipId: membership.id },
+    });
+    if (code?.status === RedemptionCodeStatus.REVOKED) {
+      throw new UnauthorizedException('兑换码已作废');
+    }
+
     if (membership.status === MembershipStatus.PENDING) {
-      const code = await this.codeRepo.findOne({
-        where: { membershipId: membership.id },
-      });
       if (!code || code.redeemValidUntil < new Date()) {
         throw new UnauthorizedException('兑换码已过期，请联系管理员');
-      }
-      if (code.status === RedemptionCodeStatus.REVOKED) {
-        throw new UnauthorizedException('兑换码已作废');
       }
     }
 

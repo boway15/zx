@@ -4,9 +4,10 @@ import {
   NotFoundException,
   Inject,
   forwardRef,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan } from 'typeorm';
+import { Repository, LessThan, In } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as crypto from 'crypto';
 import {
@@ -21,7 +22,7 @@ import { AuthService } from '../auth/auth.service';
 import { UserService } from '../user/user.service';
 import { SeatService } from '../seat/seat.service';
 import { CreateRedemptionCodeDto } from './redemption.dto';
-import { MembershipStatus } from '../../entities/membership.entity';
+import { Membership, MembershipStatus } from '../../entities/membership.entity';
 import {
   calculateNaturalDayExpiry,
   getNaturalDays,
@@ -32,7 +33,7 @@ import {
 } from '../../common/booking-schedule';
 
 @Injectable()
-export class RedemptionService {
+export class RedemptionService implements OnModuleInit {
   private static readonly CODE_LENGTH = 11;
 
   constructor(
@@ -46,6 +47,66 @@ export class RedemptionService {
     @Inject(forwardRef(() => AccessService))
     private readonly accessService: AccessService,
   ) {}
+
+  async onModuleInit() {
+    await this.migrateLegacyCodeStatuses();
+  }
+
+  /** 旧版 used 按会员卡状态拆分为 bound / activated */
+  private async migrateLegacyCodeStatuses() {
+    await this.codeRepo.manager.query(`
+      UPDATE redemption_codes rc
+      SET status = 'bound'
+      FROM memberships m
+      WHERE rc.membership_id::uuid = m.id
+        AND rc.status = 'used'
+        AND m.status = 'pending'
+    `);
+    await this.codeRepo.manager.query(`
+      UPDATE redemption_codes rc
+      SET status = 'activated'
+      FROM memberships m
+      WHERE rc.membership_id::uuid = m.id
+        AND rc.status = 'used'
+        AND m.status IN ('active', 'expired')
+    `);
+  }
+
+  private isCodeBound(status: RedemptionCodeStatus): boolean {
+    return status === RedemptionCodeStatus.BOUND || status === RedemptionCodeStatus.USED;
+  }
+
+  private isCodeActivated(status: RedemptionCodeStatus): boolean {
+    return status === RedemptionCodeStatus.ACTIVATED;
+  }
+
+  private isCodeEntered(status: RedemptionCodeStatus): boolean {
+    return this.isCodeBound(status) || this.isCodeActivated(status);
+  }
+
+  private formatAdminListItem(
+    code: RedemptionCode,
+    membership?: Membership | null,
+  ) {
+    const activated =
+      this.isCodeActivated(code.status) ||
+      (code.status === RedemptionCodeStatus.USED &&
+        membership?.status === MembershipStatus.ACTIVE);
+
+    return {
+      id: code.id,
+      code: code.code,
+      status: code.status,
+      redeemValidUntil: code.redeemValidUntil,
+      usedAt: code.usedAt ?? null,
+      note: code.note,
+      externalPlatform: code.externalPlatform,
+      externalVoucher: code.externalVoucher,
+      product: { name: code.product.name },
+      activatedAt: activated ? membership?.startAt ?? null : null,
+      membershipEndAt: activated ? membership?.endAt ?? null : null,
+    };
+  }
 
   /** 规范为11位纯数字 */
   normalizeCode(codeInput: string): string {
@@ -150,7 +211,7 @@ export class RedemptionService {
       };
     }
 
-    if (record.status === RedemptionCodeStatus.USED) {
+    if (this.isCodeEntered(record.status)) {
       if (!record.membershipId) {
         throw new BadRequestException('兑换码状态异常，请联系管理员');
       }
@@ -215,7 +276,7 @@ export class RedemptionService {
         throw new BadRequestException('该兑换码已过期，请联系管理员重新生成');
       }
       membership = await this.performRedeem(record);
-    } else if (record.status === RedemptionCodeStatus.USED) {
+    } else if (this.isCodeEntered(record.status)) {
       if (!record.membershipId) {
         throw new BadRequestException('兑换码状态异常，请联系管理员');
       }
@@ -286,7 +347,18 @@ export class RedemptionService {
         throw new BadRequestException('兑换码关联的商品不存在');
       }
 
-      if (locked.status === RedemptionCodeStatus.USED) {
+      if (locked.status === RedemptionCodeStatus.BOUND || locked.status === RedemptionCodeStatus.USED) {
+        if (!locked.membershipId) {
+          throw new BadRequestException('兑换码状态异常，请联系管理员');
+        }
+        const existing = await this.membershipService.findById(locked.membershipId);
+        if (!existing) {
+          throw new BadRequestException('会员卡不存在');
+        }
+        return existing;
+      }
+
+      if (locked.status === RedemptionCodeStatus.ACTIVATED) {
         if (!locked.membershipId) {
           throw new BadRequestException('兑换码状态异常，请联系管理员');
         }
@@ -317,7 +389,7 @@ export class RedemptionService {
         em,
       );
 
-      locked.status = RedemptionCodeStatus.USED;
+      locked.status = RedemptionCodeStatus.BOUND;
       locked.usedByUserId = user.id;
       locked.usedAt = new Date();
       locked.membershipId = membership.id;
@@ -327,47 +399,108 @@ export class RedemptionService {
     });
   }
 
-  async extendRedeemValidDays(id: string, days: number) {
-    if (days < 1) {
-      throw new BadRequestException('延长天数至少为 1');
+  async list(
+    page = 1,
+    limit = 20,
+    status?: RedemptionCodeStatus,
+    code?: string,
+  ) {
+    const normalized = code?.replace(/\D/g, '');
+    const qb = this.codeRepo
+      .createQueryBuilder('rc')
+      .leftJoinAndSelect('rc.product', 'product')
+      .leftJoinAndSelect('rc.usedByUser', 'usedByUser')
+      .orderBy('rc.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    if (status) {
+      qb.andWhere('rc.status = :status', { status });
     }
 
-    const record = await this.codeRepo.findOne({ where: { id } });
-    if (!record) throw new NotFoundException('兑换码不存在');
-    if (record.status === RedemptionCodeStatus.REVOKED) {
-      throw new BadRequestException('已作废的兑换码不能延长');
+    if (normalized) {
+      if (normalized.length === RedemptionService.CODE_LENGTH) {
+        qb.andWhere('rc.code = :code', { code: normalized });
+      } else {
+        qb.andWhere('rc.code LIKE :code', { code: `%${normalized}%` });
+      }
     }
 
-    record.redeemValidUntil = calculateNaturalDayExpiry(new Date(), days);
-    if (record.status === RedemptionCodeStatus.EXPIRED) {
-      record.status = record.membershipId
-        ? RedemptionCodeStatus.USED
-        : RedemptionCodeStatus.UNUSED;
-    }
+    const [items, total] = await qb.getManyAndCount();
 
-    return this.codeRepo.save(record);
-  }
+    const membershipIds = [
+      ...new Set(
+        items.map((c) => c.membershipId).filter((id): id is string => !!id),
+      ),
+    ];
+    const memberships = await this.membershipService.findByIds(membershipIds);
+    const membershipById = new Map(memberships.map((m) => [m.id, m]));
 
-  async list(page = 1, limit = 20, status?: RedemptionCodeStatus) {
-    const where = status ? { status } : {};
-    const [items, total] = await this.codeRepo.findAndCount({
-      where,
-      relations: ['product', 'usedByUser'],
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
-    return { items, total, page, limit };
+    return {
+      items: items.map((c) =>
+        this.formatAdminListItem(
+          c,
+          c.membershipId ? membershipById.get(c.membershipId) : null,
+        ),
+      ),
+      total,
+      page,
+      limit,
+    };
   }
 
   async revoke(id: string) {
     const record = await this.codeRepo.findOne({ where: { id } });
     if (!record) throw new NotFoundException('兑换码不存在');
-    if (record.status !== RedemptionCodeStatus.UNUSED) {
-      throw new BadRequestException('只能作废未使用的兑换码');
+
+    if (record.status === RedemptionCodeStatus.REVOKED) {
+      throw new BadRequestException('该兑换码已作废');
     }
-    record.status = RedemptionCodeStatus.REVOKED;
-    return this.codeRepo.save(record);
+    if (record.status === RedemptionCodeStatus.EXPIRED) {
+      throw new BadRequestException('已过期的兑换码无需作废');
+    }
+
+    const revocable = new Set([
+      RedemptionCodeStatus.UNUSED,
+      RedemptionCodeStatus.BOUND,
+      RedemptionCodeStatus.ACTIVATED,
+      RedemptionCodeStatus.USED,
+    ]);
+    if (!revocable.has(record.status)) {
+      throw new BadRequestException('该兑换码不可作废');
+    }
+
+    return this.codeRepo.manager.transaction(async (em) => {
+      const codeRepo = em.getRepository(RedemptionCode);
+      const locked = await codeRepo.findOne({
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!locked) throw new NotFoundException('兑换码不存在');
+      if (!revocable.has(locked.status)) {
+        throw new BadRequestException('该兑换码不可作废');
+      }
+
+      let cancelledReservations = 0;
+      if (locked.membershipId) {
+        cancelledReservations =
+          await this.seatService.cancelAllReservationsByMembership(
+            locked.membershipId,
+            em,
+          );
+        await this.membershipService.revokeMembership(locked.membershipId, em);
+      }
+
+      locked.status = RedemptionCodeStatus.REVOKED;
+      await codeRepo.save(locked);
+
+      return {
+        id: locked.id,
+        code: locked.code,
+        status: locked.status,
+        cancelledReservations,
+      };
+    });
   }
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -375,7 +508,7 @@ export class RedemptionService {
     const now = new Date();
     await this.codeRepo.update(
       {
-        status: RedemptionCodeStatus.UNUSED,
+        status: In([RedemptionCodeStatus.UNUSED, RedemptionCodeStatus.BOUND]),
         redeemValidUntil: LessThan(now),
       },
       { status: RedemptionCodeStatus.EXPIRED },

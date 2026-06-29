@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository, MoreThan } from 'typeorm';
+import { EntityManager, Repository, MoreThan, In } from 'typeorm';
 import { Membership, MembershipStatus } from '../../entities/membership.entity';
 import { Product } from '../../entities/product.entity';
 import {
@@ -21,6 +21,13 @@ export class MembershipService {
     return this.membershipRepo.findOne({
       where: { id },
       relations: ['product'],
+    });
+  }
+
+  async findByIds(ids: string[]): Promise<Membership[]> {
+    if (!ids.length) return [];
+    return this.membershipRepo.find({
+      where: { id: In(ids) },
     });
   }
 
@@ -180,6 +187,19 @@ export class MembershipService {
     return this.membershipRepo.count({
       where: { status: MembershipStatus.ACTIVE, endAt: MoreThan(now) },
     });
+  }
+
+  async revokeMembership(membershipId: string, em?: EntityManager) {
+    const repo = em ? em.getRepository(Membership) : this.membershipRepo;
+    const membership = await repo.findOne({ where: { id: membershipId } });
+    if (!membership) return null;
+
+    const now = new Date();
+    if (!membership.endAt || membership.endAt > now) {
+      membership.endAt = now;
+    }
+    membership.status = MembershipStatus.EXPIRED;
+    return repo.save(membership);
   }
 
   async expireOutdated() {

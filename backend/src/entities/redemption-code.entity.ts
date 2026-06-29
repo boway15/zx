@@ -11,7 +11,13 @@ import { User } from './user.entity';
 import { Admin } from './admin.entity';
 
 export enum RedemptionCodeStatus {
+  /** 管理员已生成，用户尚未输入 */
   UNUSED = 'unused',
+  /** 用户已输入兑换码，待预约激活 */
+  BOUND = 'bound',
+  /** 已预约激活，会员卡生效中 */
+  ACTIVATED = 'activated',
+  /** @deprecated 旧数据兼容，请迁移为 bound 或 activated */
   USED = 'used',
   EXPIRED = 'expired',
   REVOKED = 'revoked',

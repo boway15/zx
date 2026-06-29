@@ -5,10 +5,10 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, QueryFailedError, Repository } from 'typeorm';
+import { In, QueryFailedError, Repository, EntityManager } from 'typeorm';
 import { Seat } from '../../entities/seat.entity';
 import { Reservation } from '../../entities/reservation.entity';
-import { RedemptionCode } from '../../entities/redemption-code.entity';
+import { RedemptionCode, RedemptionCodeStatus } from '../../entities/redemption-code.entity';
 import { Membership, MembershipStatus } from '../../entities/membership.entity';
 import { Product, ProductType } from '../../entities/product.entity';
 import { MembershipService } from '../membership/membership.service';
@@ -430,6 +430,19 @@ export class SeatService {
     );
   }
 
+  private async markRedemptionActivated(membershipId: string, em: EntityManager) {
+    const codeRepo = em.getRepository(RedemptionCode);
+    const code = await codeRepo.findOne({ where: { membershipId } });
+    if (
+      code &&
+      (code.status === RedemptionCodeStatus.BOUND ||
+        code.status === RedemptionCodeStatus.USED)
+    ) {
+      code.status = RedemptionCodeStatus.ACTIVATED;
+      await codeRepo.save(code);
+    }
+  }
+
   async reserve(membershipId: string, dto: CreateReservationDto) {
     const membership = await this.membershipService.findById(membershipId);
     if (!membership) throw new NotFoundException('会员卡不存在');
@@ -468,6 +481,7 @@ export class SeatService {
           dates[0],
           em,
         );
+        await this.markRedemptionActivated(membershipId, em);
       }
 
       for (const item of assignments) {
@@ -634,11 +648,21 @@ export class SeatService {
       order: { reserveDate: 'ASC' },
     });
 
+    const membership = await this.membershipService.findById(record.membershipId);
+    const activated =
+      record.status === RedemptionCodeStatus.ACTIVATED ||
+      (record.status === RedemptionCodeStatus.USED &&
+        membership?.status === MembershipStatus.ACTIVE);
+
     return {
       code: record.code,
       status: record.status,
       productName: record.product.name,
       note: record.note ?? null,
+      boundAt: record.usedAt ?? null,
+      redeemValidUntil: record.redeemValidUntil,
+      activatedAt: activated ? membership?.startAt ?? null : null,
+      membershipEndAt: activated ? membership?.endAt ?? null : null,
       items: reservations.map((r) => ({
         id: r.id,
         reserveDate: r.reserveDate,
@@ -647,6 +671,15 @@ export class SeatService {
         seatNo: r.seat.seatNo,
       })),
     };
+  }
+
+  async cancelAllReservationsByMembership(
+    membershipId: string,
+    em?: EntityManager,
+  ): Promise<number> {
+    const repo = em ? em.getRepository(Reservation) : this.reservationRepo;
+    const result = await repo.delete({ membershipId });
+    return result.affected ?? 0;
   }
 
   async cancelReservationForAdmin(id: string) {

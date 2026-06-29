@@ -47,6 +47,7 @@ interface MyReservation {
   dateFrom?: string | null;
   dateTo?: string | null;
   dayCount?: number;
+  hasTodayReservation?: boolean;
   assignments?: { date: string; seatLabel: string; isPreferred: boolean }[];
   membership?: {
     status: string;
@@ -135,6 +136,7 @@ function syncSessionReservation(data: MyReservation | null) {
     dateFrom: data.dateFrom,
     dateTo: data.dateTo,
     dayCount: data.dayCount,
+    hasTodayReservation: data.hasTodayReservation,
     assignments: data.assignments,
   });
   if (data.membership && !data.membership.pending) {

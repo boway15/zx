@@ -45,9 +45,3 @@ export class RedeemCodeDto {
   @Matches(/^\d{11}$/, { message: '兑换码必须为11位纯数字' })
   code!: string;
 }
-
-export class ExtendRedemptionDto {
-  @IsInt()
-  @Min(1)
-  days!: number;
-}

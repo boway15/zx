@@ -32,6 +32,10 @@ interface ByCodeResult {
   status: string;
   productName: string;
   note: string | null;
+  boundAt?: string | null;
+  redeemValidUntil?: string;
+  activatedAt?: string | null;
+  membershipEndAt?: string | null;
   items: CodeItem[];
 }
 
@@ -57,11 +61,39 @@ const loadingCode = ref(false);
 function statusText(s: string) {
   const map: Record<string, string> = {
     unused: '待兑换',
-    used: '已兑换',
+    bound: '待预约',
+    activated: '已激活',
+    used: '已激活',
     expired: '已过期',
     revoked: '已作废',
   };
   return map[s] || s;
+}
+
+function isPendingCodeStatus(status: string) {
+  return status === 'bound' || status === 'used';
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString('zh-CN');
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleDateString('zh-CN');
+}
+
+function codeMetaLabel(result: ByCodeResult) {
+  const parts = [result.productName, statusText(result.status), result.note || ''].filter(Boolean);
+  if (result.activatedAt && result.membershipEndAt) {
+    parts.push(`激活 ${formatDateTime(result.activatedAt)}`);
+    parts.push(`有效期 ${formatDate(result.activatedAt)} 至 ${formatDate(result.membershipEndAt)} 23:59`);
+  } else if (isPendingCodeStatus(result.status) && result.boundAt) {
+    parts.push(`绑定 ${formatDateTime(result.boundAt)}`);
+    if (result.redeemValidUntil) {
+      parts.push(`兑换期限至 ${formatDateTime(result.redeemValidUntil)}`);
+    }
+  }
+  return parts.join(' · ');
 }
 
 function formatDateLabel(dateStr: string) {
@@ -203,11 +235,7 @@ onMounted(loadByDate);
             <van-cell
               title="兑换码"
               :value="codeResult.code"
-              :label="[
-                codeResult.productName,
-                statusText(codeResult.status),
-                codeResult.note || '',
-              ].filter(Boolean).join(' · ')"
+              :label="codeMetaLabel(codeResult)"
             />
           </van-cell-group>
 
@@ -232,7 +260,7 @@ onMounted(loadByDate);
           </van-cell-group>
           <van-empty
             v-else
-            :description="codeResult.status === 'used' ? '该兑换码尚未预约座位' : '兑换码未激活，暂无预约'"
+            :description="isPendingCodeStatus(codeResult.status) ? '该兑换码尚未预约座位' : '兑换码未激活，暂无预约'"
           />
         </template>
 
