@@ -13,6 +13,7 @@ import {
   RedemptionCode,
   RedemptionCodeStatus,
 } from '../../entities/redemption-code.entity';
+import { Product } from '../../entities/product.entity';
 import { ProductService } from '../product/product.service';
 import { MembershipService } from '../membership/membership.service';
 import { AccessService } from '../access/access.service';
@@ -274,11 +275,15 @@ export class RedemptionService {
       const locked = await em.findOne(RedemptionCode, {
         where: { id: record.id },
         lock: { mode: 'pessimistic_write' },
-        relations: ['product'],
       });
 
       if (!locked) {
         throw new NotFoundException('兑换码不存在');
+      }
+
+      const product = await em.findOne(Product, { where: { id: locked.productId } });
+      if (!product) {
+        throw new BadRequestException('兑换码关联的商品不存在');
       }
 
       if (locked.status === RedemptionCodeStatus.USED) {
@@ -307,7 +312,7 @@ export class RedemptionService {
 
       const membership = await this.membershipService.createPendingFromRedemption(
         user.id,
-        locked.product,
+        product,
         locked.id,
         em,
       );
