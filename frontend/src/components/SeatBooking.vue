@@ -10,6 +10,10 @@ const props = defineProps<{
   active?: boolean;
 }>();
 
+const emit = defineEmits<{
+  reserved: [];
+}>();
+
 interface BookingInfo {
   pending: boolean;
   multiDay: boolean;
@@ -306,6 +310,7 @@ async function reserve(seatId: string, label: string) {
     myReservation.value = data;
     syncSessionReservation(data);
     await load();
+    emit('reserved');
   } finally {
     reserving.value = null;
   }

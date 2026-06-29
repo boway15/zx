@@ -598,7 +598,7 @@ onMounted(async () => {
         </van-tab>
 
         <van-tab title="预约座位">
-          <SeatBooking :active="activeTab === 1" />
+          <SeatBooking :active="activeTab === 1" @reserved="activeTab = 0" />
         </van-tab>
       </van-tabs>
     </template>
