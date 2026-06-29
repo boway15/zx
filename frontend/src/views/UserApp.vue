@@ -505,7 +505,7 @@ onMounted(async () => {
 
     <template v-else>
       <van-tabs v-model:active="activeTab" sticky offset-top="0" class="main-tabs">
-        <van-tab title="使用">
+        <van-tab title="使用开门">
           <div class="card-section">
             <van-cell-group inset>
               <van-cell title="兑换码" :value="session.info!.code" />
